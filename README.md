@@ -30,6 +30,18 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
     *   Fetches and caches news for 10 minutes to respect API rate limits.
     *   Analyzes sentiment and geopolitical events.
 
+## ⚠️ Broker Integration & Safety
+
+### Official APIs (Recommended)
+*   **Zerodha (Kite Connect)**: Official, stable, and secure. Recommended for Indian markets.
+*   **ICICI Direct (Breeze)**: Official, stable, and secure. Recommended for Indian markets.
+
+### Unofficial APIs (Use with Caution)
+*   **Robinhood**: Uses `robin_stocks`, an unofficial wrapper.
+    *   **Risk**: Robinhood does not officially support API trading for retail accounts. They may flag or lock accounts using automated scripts.
+    *   **Fragility**: Changes to Robinhood's internal API may break this integration at any time.
+    *   **Recommendation**: Use for **Paper Trading only** or small experimental accounts. Do not use with primary life savings.
+
 ## 🛠️ Installation
 
 1.  **Clone the Repository**:
