@@ -9,6 +9,7 @@ Welcome to the Autonomous Stock Trading Agent documentation.
 | [Architecture](./architecture.md) | System design, data flow, and component interactions |
 | [Configuration](./configuration.md) | Environment variables, watchlists, and broker setup |
 | [Strategy Engine](./strategy-engine.md) | How the AI analysis pipeline works end-to-end |
+| [Correlations](./correlations.md) | Cross-impact analysis (peers, macro sensitivities) |
 | [Dashboard Guide](./dashboard-guide.md) | Real-time monitoring dashboard features |
 | [API Reference](./api-reference.md) | Database models, key functions, and data structures |
 

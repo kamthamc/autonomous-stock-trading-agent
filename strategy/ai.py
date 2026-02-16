@@ -140,7 +140,7 @@ class AIAnalyzer:
             
         return table
 
-    async def analyze(self, symbol: str, price: float, tech: dict, news: list, options: list, earnings: dict = None) -> AISignal:
+    async def analyze(self, symbol: str, price: float, tech: dict, news: list, options: list, earnings: dict = None, cross_impact: str = None) -> AISignal:
         """Generates a trading signal using LLM. Results are cached by prompt hash."""
         from database.db import save_api_call_log
         from database.models import APICallLog
@@ -163,6 +163,17 @@ class AIAnalyzer:
         If earnings are within 3 days, prefer HOLD unless the setup is very strong.
         """
         
+        cross_impact_section = ""
+        if cross_impact:
+            cross_impact_section = f"""
+        🔗 RELATED STOCKS / CROSS-IMPACT:
+        The following correlated stocks have notable recent activity that may affect {symbol}:
+        {cross_impact}
+        
+        IMPORTANT: Consider sector contagion, supply chain effects, and competitor dynamics.
+        Strong moves or earnings from competitors/suppliers/customers can signal sector-wide trends.
+        """
+        
         prompt = f"""
         You are an expert autonomous stock trader. Analyze the following data for {symbol} and provide a trading decision.
         
@@ -176,7 +187,7 @@ class AIAnalyzer:
         
         Options Chain Analysis:
         {options_table}
-        {earnings_section}
+        {earnings_section}{cross_impact_section}
         Goal: Optimal Profit with Managed Risk. Prefer high probability setups. 
         If recommending BUY_CALL or BUY_PUT, YOU MUST SELECT the best specific contract from the Options Chain table above and populate 'recommended_option'.
         

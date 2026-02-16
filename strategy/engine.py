@@ -10,6 +10,7 @@ from .news import NewsFetcher
 from .risk import RiskManager, TradeRequest
 from .market_hours import is_market_open
 from .earnings import get_earnings_info
+from .correlations import get_cross_impact
 from trader.market_data import MarketDataFetcher
 from trader.router import BrokerRouter
 from database.db import save_signal, save_risk_review
@@ -135,6 +136,9 @@ class StrategyEngine:
                           earnings_date=earnings.earnings_date,
                           days_until=earnings.days_until_earnings)
 
+        # 2c. Cross-Impact Analysis (correlated stocks)
+        cross_impact = get_cross_impact(symbol)
+
         # 3. AI Analysis
         # Build earnings context for the AI
         earnings_context = None
@@ -146,13 +150,19 @@ class StrategyEngine:
                 "revenue_estimate": earnings.revenue_estimate,
             }
         
+        # Build cross-impact context for the AI
+        cross_impact_context = None
+        if cross_impact.related_news_context:
+            cross_impact_context = cross_impact.related_news_context
+        
         ai_signal = await self.ai_analyzer.analyze(
             symbol=symbol,
             price=price_snapshot.price,
             tech=tech_indicators.model_dump(),
             news=news,
             options=options,
-            earnings=earnings_context
+            earnings=earnings_context,
+            cross_impact=cross_impact_context
         )
         
         logger.info("ai_signal_generated", symbol=symbol, region=region,

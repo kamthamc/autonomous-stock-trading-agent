@@ -25,6 +25,7 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
 - **Devil's Advocate Risk Review** — A secondary AI agent critiques every trade before execution, reducing hallucination-driven trades
 - **Earnings Awareness** — Automatically detects upcoming quarterly results and warns the AI to factor in volatility risk
 - **LLM Response Cache** — In-memory TTL cache (15 min) keyed by prompt hash; avoids redundant API calls when data hasn't changed
+- **Cross-Impact Analysis** — Factors in peer earnings, competitor moves, and macro/political sensitivities (e.g., tariffs, AI regulation)
 
 ### Multi-Market Support
 - **US Market**: Robinhood (via `robin_stocks`)
