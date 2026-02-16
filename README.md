@@ -1,0 +1,86 @@
+# Autonomous Stock Trading Agent 🤖📈
+
+An advanced, AI-powered autonomous trading agent capable of analyzing market data, news, and technical indicators to execute trades on US and Indian stock markets.
+
+## 🚀 Features
+
+*   **Multi-Broker Support**: Integration with **Robinhood** (US) and **Zerodha** (India).
+*   **AI-Driven Analysis**: Uses LLMs (OpenAI/Azure OpenAI/Gemini) to analyze technicals, news sentiment, and option chains.
+*   **Smart Risk Management**:
+    *   **Capital Allocation**: Dynamic position sizing based on risk appetite.
+    *   **AI Risk Review (Devil's Advocate)**: A secondary AI agent critiques every trade to prevent hallucinations.
+    *   **Pre-Trade Checks**: Validates funds and market hours before analysis.
+*   **Options Intelligence**:
+    *   Analyzes Option Chains (Volume, OI, Greeks).
+    *   Recommends specific contracts (e.g., "AAPL 150 CALL").
+*   **Real-Time Dashboard**:
+    *   Streamlit-based UI for monitoring trades, signals, and PnL.
+    *   Live logs and AI reasoning transparency.
+*   **News Intelligence**:
+    *   Fetches and caches news for 10 minutes to respect API rate limits.
+    *   Analyzes sentiment and geopolitical events.
+
+## 🛠️ Installation
+
+1.  **Clone the Repository**:
+    ```bash
+    git clone <repository_url>
+    cd autonomous-stock-trading-agent
+    ```
+
+2.  **Set up Virtual Environment**:
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+    ```
+
+3.  **Install Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Configure Environment**:
+    Copy `.env.example` to `.env` and fill in your keys:
+    ```bash
+    cp .env.example .env
+    ```
+    *Required Keys*: `OPENAI_API_KEY` (or Azure/Gemini), Broker Credentials.
+
+## 🏃‍♂️ Usage
+
+### 1. Run the Agent
+The main agent runs in the background, analyzing stocks and executing trades.
+```bash
+python main.py
+```
+
+### 2. Launch the Dashboard
+Monitor performance, logs, and signals in real-time.
+```bash
+streamlit run dashboard.py
+```
+
+## 🧠 Architecture
+
+*   **`main.py`**: Entry point. Manages the trading loop and broker connections.
+*   **`strategy/`**:
+    *   `engine.py`: Orchestrates data fetching, analysis, and execution.
+    *   `ai.py`: Handles LLM prompts for Analysis and Risk Review.
+    *   `market_hours.py`: Checks market status for US/IN exchanges.
+    *   `news.py`: Fetches and caches news.
+*   **`trader/`**: Broker integrations (Robinhood, Zerodha).
+*   **`database/`**: SQLModel definitions and DB interactions.
+
+## 🛡️ Safety Mechanisms
+
+1.  **Paper Trading Mode**: Default mode (`trading_mode=paper` in `.env`) simulates trades without real money.
+2.  **Funds Check**: Prevents trading if capital < $100.
+3.  **AI Devil's Advocate**: Rejects trades if the Risk Manager AI finds flaws in the thesis.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please open an issue or PR for major changes.
+
+## 📄 License
+
+MIT License
