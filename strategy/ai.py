@@ -320,8 +320,24 @@ class AIAnalyzer:
         - Recent News: {news_summary}
         
         YOUR JOB: 
-        Find potential flaws, risks, or reasons WHY COMPLIANCE SHOULD REJECT THIS TRADE.
-        Be skeptical. Look for conflicting signals (e.g. Buying Calls when RSI is 80, or Buying Puts when Support is near).
+        Critique the trade. You are a "Devil's Advocate".
+        
+        GUIDELINES:
+        1. **Allow Non-Stock Assets**: ETFs, ETCs (Gold/Silver), and Commodities are VALID instruments. Do NOT reject them just because they are not "operating companies".
+        2. **Value Macro Context**: War, Geopolitics, and Bond Yields are valid reasons to buy Gold/Bonds. If the reasoning cites these, CREDIT it.
+        3. **Confidence-Based Skepticism**:
+           - If Confidence is MODERATE TO HIGH (> 0.65), reject ONLY if you see a FATAL flaw.
+           - If Confidence is LOW (< 0.65), be skeptical.
+        4. **Strategy Awareness**: 
+           - Mean Reversion is VALID. Do NOT reject "Counter-Trend" trades if the thesis is explicitly "Mean Reversion" (e.g. RSI oversold).
+           - Liquidity: For Major Caps (AAPL, MSFT, SPY, etc.), "below average volume" is NOT a risk. Only reject penny stocks for volume.
+        
+        Look for:
+        - Buying into resistance / Selling into support
+        - RSI extremes (Buying > 70, Selling < 30) - UNLESS Mean Reversion
+        - Fatal flaws only (for > 0.65 confidence)
+        - Counter-trend trades without confirmation
+        - LOW LIQUIDITY RISK (Is volume sufficient to exit?)
         
         Output JSON ONLY:
         {{

@@ -66,6 +66,7 @@ The analysis pipeline for each ticker:
 |--------|---------|-------------|
 | `engine.py` | Orchestrates the full analysis pipeline for one ticker | Concurrent data fetching with `asyncio.gather` |
 | `ai.py` | LLM-based signal generation + risk review | SHA-256 prompt cache with 15-min TTL, 200 entries |
+| `correlations.py` | Cross-impact analysis (peers, macro sensitivities) | Hardcoded + Dynamic sector-based discovery |
 | `technical.py` | Computes RSI, MACD, Bollinger Bands, SMA-50/200 | Uses `pandas_ta` library |
 | `news.py` | Fetches news via GoogleNews | 10-minute cache TTL |
 | `risk.py` | Position sizing, capital limit enforcement | Region-aware capital allocation |
@@ -96,7 +97,7 @@ The analysis pipeline for each ticker:
 
 ### 4. Database Layer — `database/`
 
-The system uses a **dual-database** architecture:
+The system uses a **dual-database** architecture stored in `__databases__/`:
 
 | Database | File | Purpose | Rotation |
 |----------|------|---------|----------|
@@ -121,17 +122,18 @@ Streamlit-based real-time UI that reads from both databases:
 1. main.py selects ticker from regional watchlist
 2. engine.py checks market hours (live mode only)
 3. Concurrent fetch: price + history + options + news
-4. technical.py computes indicators from 1Y history
-5. earnings.py checks for upcoming quarterly results
-6. ai.py constructs LLM prompt with all data
+4. correlations.py fetches cross-impact data (peers, macro)
+5. technical.py computes indicators from 1Y history
+6. earnings.py checks for upcoming quarterly results
+7. ai.py constructs LLM prompt with all data
    └── Cache check → hit? return cached signal
    └── Cache miss → call LLM → cache result
-7. ai.py risk review (Devil's Advocate)
+8. ai.py risk review (Devil's Advocate)
    └── Same cache mechanism
-8. risk.py validates position size and capital
-9. router.py routes to appropriate broker
-10. Trade executed (or simulated in paper mode)
-11. All steps logged to DB + API call stats
+9. risk.py validates position size and capital
+10. router.py routes to appropriate broker
+11. Trade executed (or simulated in paper mode)
+12. All steps logged to DB + API call stats
 ```
 
 ### LLM Cache Strategy

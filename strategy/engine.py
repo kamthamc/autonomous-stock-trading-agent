@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from .technical import TechAnalyzer
 from .ai import AIAnalyzer, AISignal
-from .news import NewsFetcher
+from .news import NewsFetcher, NewsItem
 from .risk import RiskManager, TradeRequest
 from .market_hours import is_market_open
 from .earnings import get_earnings_info
@@ -89,7 +89,7 @@ class StrategyEngine:
         
         return max(1, max_shares_by_allocation)
 
-    async def analyze_symbol(self, symbol: str) -> Optional[TradeSignal]:
+    async def analyze_symbol(self, symbol: str, macro_news: List['NewsItem'] = []) -> Optional[TradeSignal]:
         """Runs full analysis cycle for a single symbol."""
         logger.info("analyzing_symbol", symbol=symbol)
         
@@ -113,12 +113,16 @@ class StrategyEngine:
         
         # 1. Fetch Data Concurrently
         # Request 1 year of history so SMA-200 and MACD have enough data points
-        price_snapshot, history, options, news = await asyncio.gather(
+        # Also fetch specific news for the ticker
+        price_snapshot, history, options, specific_news = await asyncio.gather(
             self.market_data.get_current_price(symbol),
             self.market_data.get_history(symbol, period="1y"),
             self.market_data.get_option_chain(symbol),
             self.news_fetcher.get_news(f"{symbol} stock news")
         )
+        
+        # Combine specific news with macro news (prioritize specific)
+        combined_news = specific_news + macro_news
         
         if not price_snapshot or history.empty:
             logger.warning("insufficient_data", symbol=symbol)
@@ -133,8 +137,8 @@ class StrategyEngine:
         earnings = get_earnings_info(symbol)
         if earnings.is_within_warning_window:
             logger.warning("earnings_approaching", symbol=symbol,
-                          earnings_date=earnings.earnings_date,
-                          days_until=earnings.days_until_earnings)
+                           earnings_date=earnings.earnings_date,
+                           days_until=earnings.days_until_earnings)
 
         # 2c. Cross-Impact Analysis (correlated stocks)
         cross_impact = get_cross_impact(symbol)
@@ -159,7 +163,7 @@ class StrategyEngine:
             symbol=symbol,
             price=price_snapshot.price,
             tech=tech_indicators.model_dump(),
-            news=news,
+            news=combined_news,
             options=options,
             earnings=earnings_context,
             cross_impact=cross_impact_context
@@ -186,7 +190,7 @@ class StrategyEngine:
                 signal=ai_signal,
                 price=price_snapshot.price,
                 tech=tech_indicators.model_dump(),
-                news=news
+                news=combined_news
             )
             
             # Determine if we'll override the rejection
@@ -282,6 +286,15 @@ class StrategyEngine:
     async def run_cycle(self, watchlist: List[str]) -> List[TradeSignal]:
         """Runs analysis on all watchlist symbols (deduplicated)."""
         unique_symbols = list(dict.fromkeys(watchlist))
-        tasks = [self.analyze_symbol(sym) for sym in unique_symbols]
+        
+        # Fetch Macro News ONCE
+        logger.info("fetching_macro_news")
+        try:
+            macro_news = await self.news_fetcher.get_news("Global Economy War Geopolitics Bonds")
+        except Exception as e:
+            logger.error("macro_news_fetch_failed", error=str(e))
+            macro_news = []
+            
+        tasks = [self.analyze_symbol(sym, macro_news) for sym in unique_symbols]
         results = await asyncio.gather(*tasks)
         return [r for r in results if r is not None and r.action != "HOLD"]

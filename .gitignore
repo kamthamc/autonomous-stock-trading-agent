@@ -1,6 +1,7 @@
 
 # Python
 __pycache__/
+__databases__/
 *.py[cod]
 *$py.class
 *.so
@@ -40,6 +41,7 @@ env/
 # Logs
 *.log
 logs/
+__logs__/
 ai_trade_review.jsonl
 
 # IDEs

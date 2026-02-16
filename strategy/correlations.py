@@ -130,7 +130,6 @@ CORRELATION_MAP: Dict[str, List[StockRelation]] = {
         StockRelation(symbol="WIPRO.NS", relationship="competitor", impact_weight=0.6),
         StockRelation(symbol="HCLTECH.NS", relationship="competitor", impact_weight=0.6),
         StockRelation(symbol="TECHM.NS", relationship="competitor", impact_weight=0.5),
-        StockRelation(symbol="ACCENTURE", relationship="competitor", impact_weight=0.4),
     ],
     "INFY.NS": [
         StockRelation(symbol="TCS.NS", relationship="competitor", impact_weight=0.8),
@@ -265,7 +264,17 @@ def _get_stock_sector(symbol: str) -> Optional[dict]:
     
     try:
         ticker = yf.Ticker(symbol)
-        info = ticker.info or {}
+        # yfinance info property can trigger API calls that may fail
+        try:
+            info = ticker.info
+        except Exception:
+            # Fallback or specific error handling (e.g. 404 Not Found)
+            info = None
+            
+        if not info:
+            logger.debug("sector_fetch_empty", symbol=symbol)
+            return None
+
         result = {
             "sector": info.get("sector"),
             "industry": info.get("industry"),

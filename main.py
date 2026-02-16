@@ -18,6 +18,9 @@ from strategy.risk import RiskManager
 logger = structlog.get_logger()
 
 # Configure Logging
+# Ensure log directory exists
+os.makedirs(settings.log_dir, exist_ok=True)
+
 structlog.configure(
     processors=[
         structlog.stdlib.add_log_level,
@@ -34,8 +37,12 @@ structlog.configure(
 
 # File Handler
 import logging
-file_handler = logging.FileHandler("agent_activity.log")
-file_handler.setFormatter(logging.Formatter("%(message)s"))
+file_handler = logging.FileHandler(settings.log_file_path)
+# Use JSON Formatting for file so Dashboard can parse it
+json_formatter = structlog.stdlib.ProcessorFormatter(
+    processor=structlog.processors.JSONRenderer(),
+)
+file_handler.setFormatter(json_formatter)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter("%(message)s"))
 
@@ -53,8 +60,9 @@ try:
 except Exception as e:
     print(f"Failed to initialize OpenTelemetry: {e}")
 
-from database.db import init_db, save_trade
-from database.models import Trade
+from database.db import init_db, save_trade, trading_session
+from database.models import Trade, AppConfig
+from sqlmodel import select
 
 
 def validate_config():
@@ -142,6 +150,48 @@ async def setup_broker_router() -> BrokerRouter:
     return router
 
 
+async def load_dynamic_config(risk_managers=None):
+    """Overrides global settings with values from the database (Dashboard config)."""
+    try:
+        async with trading_session() as session:
+            result = await session.execute(select(AppConfig))
+            configs = result.scalars().all()
+            config_map = {c.key: c.value for c in configs}
+            
+            if "US_TICKERS" in config_map:
+                try: 
+                    settings.us_tickers = [t.strip() for t in config_map["US_TICKERS"].split(",") if t.strip()]
+                    logger.info("config_override", key="US_TICKERS", count=len(settings.us_tickers))
+                except: pass
+                
+            if "INDIA_TICKERS" in config_map:
+                try:
+                    settings.india_tickers = [t.strip() for t in config_map["INDIA_TICKERS"].split(",") if t.strip()]
+                    logger.info("config_override", key="INDIA_TICKERS", count=len(settings.india_tickers))
+                except: pass
+            
+            # Risk Updates
+            if risk_managers and "RISK_MAX_RISK_PCT" in config_map:
+                try:
+                    risk_pct = Decimal(config_map["RISK_MAX_RISK_PCT"]) / 100
+                    for rm in risk_managers.values():
+                        rm.max_risk_per_trade = risk_pct
+                    logger.info("config_risk_update", max_risk_pct=str(risk_pct))
+                except: pass
+
+            if risk_managers and "RISK_MAX_ALLOC_PCT" in config_map:
+                try:
+                    alloc_pct = Decimal(config_map["RISK_MAX_ALLOC_PCT"]) / 100
+                    for rm in risk_managers.values():
+                        # Update relative to CURRENT capital available
+                        rm.max_capital_per_trade = rm.current_capital * alloc_pct
+                    logger.info("config_risk_update", max_alloc_pct=str(alloc_pct))
+                except: pass
+
+    except Exception as e:
+        logger.error("failed_to_load_dynamic_config", error=str(e))
+
+
 async def trading_loop():
     logger.info("agent_starting", mode=settings.trading_mode)
     
@@ -168,11 +218,15 @@ async def trading_loop():
             max_per_trade=settings.india_max_per_trade,
         ),
     }
-    
+
+    # Load initial dynamic config
+    await load_dynamic_config(risk_managers)
+
     # Inject US broker into MarketData for real-time pricing
     from trader.market_data import MarketDataFetcher
     from strategy.scanner import MarketScanner
     
+    # Use generic broker for data if specific one fails
     us_broker_for_data = router.get_broker_for_symbol("AAPL")
     market_data = MarketDataFetcher(broker=us_broker_for_data)
     
@@ -190,6 +244,18 @@ async def trading_loop():
     
     while True:
         try:
+            # Refresh config (Dashboard settings & Risk Params)
+            await load_dynamic_config(risk_managers)
+            
+            # CHECK KILL SWITCH
+            async with trading_session() as session:
+                result = await session.execute(select(AppConfig).where(AppConfig.key == "TRADING_STATUS"))
+                status_row = result.scalar_one_or_none()
+                if status_row and status_row.value == "PAUSED":
+                    logger.warning("trading_paused_by_kill_switch", status="PAUSED")
+                    await asyncio.sleep(10)
+                    continue
+            
             current_time = datetime.now()
             
             # Log market status each cycle
@@ -283,7 +349,7 @@ async def trading_loop():
             logger.info("agent_stopping_user_request")
             break
         except Exception as e:
-            logger.error("main_loop_error", error=str(e))
+            logger.exception("main_loop_error", error=str(e))
             await asyncio.sleep(10)
 
 if __name__ == "__main__":

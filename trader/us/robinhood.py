@@ -54,7 +54,18 @@ class RobinhoodTrader(USBroker):
         exchange_symbol = self.get_exchange_symbol(symbol)
         
         if self.is_paper:
-             return Decimal("0.00")
+            try:
+                import yfinance as yf
+                ticker = yf.Ticker(exchange_symbol)
+                # fast_info is faster and reliable for US stocks
+                price = ticker.fast_info.last_price
+                if not price:
+                    # Fallback
+                    hist = ticker.history(period="1d")
+                    price = hist['Close'].iloc[-1] if not hist.empty else 0.0
+                return Decimal(str(price)) if price else Decimal("0.00")
+            except:
+                return Decimal("0.00")
 
         try:
             loop = asyncio.get_running_loop()

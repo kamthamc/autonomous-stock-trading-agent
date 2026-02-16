@@ -16,6 +16,9 @@ class TechIndicators(BaseModel):
     atr: float
     sma_50: Optional[float] = None
     sma_200: Optional[float] = None
+    volume: Optional[int] = None
+    avg_volume: Optional[int] = None
+    volume_oscillator: Optional[float] = None
 
 class TechAnalyzer:
     def analyze(self, df: pd.DataFrame) -> TechIndicators:
@@ -48,6 +51,15 @@ class TechAnalyzer:
             df.ta.sma(length=50, append=True)
             df.ta.sma(length=200, append=True)
             
+            # Volume Metrics (SMA 20)
+            if 'Volume' in df.columns:
+                df['SMA_20_Vol'] = df.ta.sma(close='Volume', length=20, append=True)
+                # Volume Oscillator (Fast 5, Slow 10 - manual calc if lib fails)
+                try:
+                    df['VolOsc'] = (df.ta.sma(close='Volume', length=5) - df.ta.sma(close='Volume', length=10)) / df.ta.sma(close='Volume', length=10) * 100
+                except:
+                    pass
+            
             # Get latest row
             latest = df.iloc[-1]
             
@@ -64,6 +76,14 @@ class TechAnalyzer:
             sma_50 = get_val("SMA_50")
             sma_200 = get_val("SMA_200")
             
+            # Volume safeties
+            vol = int(latest.get('Volume', 0)) if not pd.isna(latest.get('Volume')) else None
+            avg_vol = get_val("SMA_20_Vol")
+            if avg_vol:
+                avg_vol = int(avg_vol)
+            vol_osc = latest.get('VolOsc')
+            if pd.isna(vol_osc): vol_osc = None
+            
             return TechIndicators(
                 rsi=get_val("RSI") or 50.0,       # Default RSI to neutral if missing
                 macd=get_val("MACD_") or 0.0,
@@ -73,6 +93,9 @@ class TechAnalyzer:
                 atr=get_val("ATR") or 0.0,
                 sma_50=sma_50,
                 sma_200=sma_200,
+                volume=vol,
+                avg_volume=avg_vol,
+                volume_oscillator=vol_osc
             )
 
         except Exception as e:

@@ -201,8 +201,11 @@ The Streamlit dashboard provides real-time visibility into the agent's activity:
 3. **AI Devil's Advocate** — Secondary AI reviews each trade for flaws before execution
 4. **Regional Market Hours** — Skips tickers whose markets are closed/on holiday (enforced in live mode)
 5. **Earnings Warning** — AI factors in earnings volatility for stocks reporting within 7 days
+
 6. **Capital Limits** — Per-region max capital prevents overexposure
 7. **Monthly DB Rotation** — Activity data is split into monthly databases to prevent unbounded growth
+
+For full details, see [**Security & Safety**](docs/security.md).
 
 ---
 

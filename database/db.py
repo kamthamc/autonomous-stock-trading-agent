@@ -16,14 +16,15 @@ from typing import List, Optional
 from datetime import datetime
 import structlog
 
-from .models import Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog
+from agent_config import settings
+from .models import Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog, AppConfig
 
 logger = structlog.get_logger()
 
 # ──────────────────────────────────────────────
 # Trading DB  (single file, low-volume)
 # ──────────────────────────────────────────────
-TRADING_DB_URL = "sqlite+aiosqlite:///trading_agent.db"
+TRADING_DB_URL = f"sqlite+aiosqlite:///{settings.trading_db_path}"
 trading_engine = create_async_engine(TRADING_DB_URL, echo=False)
 trading_session = sessionmaker(trading_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -50,11 +51,12 @@ def _get_activity_session() -> sessionmaker:
     month_key = _get_activity_month_key()
 
     if month_key not in _activity_sessions:
-        db_url = f"sqlite+aiosqlite:///activity_{month_key}.db"
+        db_path = settings.get_activity_db_path(month_key)
+        db_url = f"sqlite+aiosqlite:///{db_path}"
         engine = create_async_engine(db_url, echo=False)
         _activity_engines[month_key] = engine
         _activity_sessions[month_key] = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        logger.info("activity_db_created", month=month_key, path=f"activity_{month_key}.db")
+        logger.info("activity_db_created", month=month_key, path=db_path)
 
     return _activity_sessions[month_key]
 
@@ -75,16 +77,19 @@ async def _ensure_activity_tables():
             )
         )
 
-
 # ──────────────────────────────────────────────
 # Initialization
 # ──────────────────────────────────────────────
 
-_TRADING_TABLES = {"signals", "trades", "market_trends"}
+_TRADING_TABLES = {"signals", "trades", "market_trends", "app_config"}
 
 
 async def init_db():
     """Initialize both databases, creating tables as needed."""
+    # Ensure directory exists
+    import os
+    os.makedirs(settings.db_dir, exist_ok=True)
+    
     # Trading DB
     async with trading_engine.begin() as conn:
         await conn.run_sync(
@@ -96,10 +101,13 @@ async def init_db():
 
     # Activity DB (current month)
     await _ensure_activity_tables()
+    
+    # Generate activity db path for logging
+    act_path = settings.get_activity_db_path(_get_activity_month_key())
 
     logger.info("databases_initialized",
-                trading="trading_agent.db",
-                activity=f"activity_{_get_activity_month_key()}.db")
+                trading=settings.trading_db_path,
+                activity=act_path)
 
 
 # ──────────────────────────────────────────────

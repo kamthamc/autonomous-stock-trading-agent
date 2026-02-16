@@ -46,7 +46,8 @@ def setup_telemetry(service_name: str = "trading-agent"):
     # The user asked for a dedicated file. Let's add a file handler specifically for this.
     
     import logging
-    ai_handler = logging.FileHandler("ai_trade_review.jsonl")
+    from agent_config import settings
+    ai_handler = logging.FileHandler(settings.ai_trade_review_file_path)
     ai_handler.setFormatter(logging.Formatter('%(message)s'))
     ai_handler.setLevel(logging.INFO)
     

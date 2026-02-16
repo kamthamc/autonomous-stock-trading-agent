@@ -59,6 +59,35 @@ class AgentSettings(BaseSettings):
     gemini_api_key: Optional[str] = None
     
     # ──────────────────────────────────────────────
+    # Database Configuration
+    # ──────────────────────────────────────────────
+    db_dir: str = "__databases__"
+    trading_db_name: str = "trading_agent.db"
+    activity_db_prefix: str = "activity_"
+
+    @property
+    def trading_db_path(self) -> str:
+        return os.path.join(self.db_dir, self.trading_db_name)
+    
+    def get_activity_db_path(self, month_key: str) -> str:
+        return os.path.join(self.db_dir, f"{self.activity_db_prefix}{month_key}.db")
+
+    # ──────────────────────────────────────────────
+    # Logging Configuration
+    # ──────────────────────────────────────────────
+    log_dir: str = "__logs__"
+    log_file_name: str = "agent.jsonl"
+    ai_trade_review_file_name: str = "ai_trade_review.jsonl"
+    
+    @property
+    def log_file_path(self) -> str:
+        return os.path.join(self.log_dir, self.log_file_name)
+
+    @property
+    def ai_trade_review_file_path(self) -> str:
+        return os.path.join(self.log_dir, self.ai_trade_review_file_name)
+
+    # ──────────────────────────────────────────────
     # Trading Limits (global)
     # ──────────────────────────────────────────────
     trading_mode: Literal["paper", "live"] = "paper"

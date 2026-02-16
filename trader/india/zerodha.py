@@ -51,7 +51,25 @@ class ZerodhaTrader(IndiaBroker):
         return True
 
     async def get_quote(self, symbol: str) -> Decimal:
-        if self.is_paper: return Decimal("0.00")
+        if self.is_paper: 
+            try:
+                import yfinance as yf
+                # yfinance needs suffixes .NS or .BO, symbol might differ
+                # Zerodha symbols usually come in as RELIANCE.NS, normalized?
+                # Base class normalize_symbol handles it.
+                ticker = yf.Ticker(symbol)
+                # fast_info is faster
+                price = ticker.fast_info.last_price
+                if not price:
+                    # Fallback
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        price = hist['Close'].iloc[-1]
+                    else:
+                        price = 0.0
+                return Decimal(str(price)) if price else Decimal("0.00")
+            except:
+                return Decimal("0.00")
         
         try:
             loop = asyncio.get_running_loop()

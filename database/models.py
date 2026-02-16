@@ -98,3 +98,15 @@ class APICallLog(SQLModel, table=True):
     # Cost estimate (optional, AI calls)
     estimated_cost_usd: Optional[float] = None
 
+
+class AppConfig(SQLModel, table=True):
+    """
+    Stores dynamic application settings that can be changed via Dashboard.
+    Key-Value pair storage.
+    """
+    __tablename__ = "app_config"
+    key: str = Field(primary_key=True)
+    value: str
+    description: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.now)
+
