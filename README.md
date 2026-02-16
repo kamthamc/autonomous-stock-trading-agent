@@ -1,5 +1,15 @@
 # Autonomous Stock Trading Agent 🤖📈
 
+> [!CAUTION]
+> **DISCLAIMER: EXPERIMENTAL SOFTWARE**
+> This project is for **EDUCATIONAL AND RESEARCH PURPOSES ONLY**. 
+> - It is **NOT** financial advice.
+> - The software is **untested** in live market conditions.
+> - Using this software for live trading carries significant risk of financial loss.
+> - The authors and contributors assume **NO RESPONSIBILITY** for any trades executed or money lost.
+> - **ALWAYS** use Paper Trading mode (`trading_mode=paper`) for testing.
+> - Never hardcode API keys or secrets; always use the `.env` file.
+
 An advanced, AI-powered autonomous trading agent capable of analyzing market data, news, and technical indicators to execute trades on US and Indian stock markets.
 
 ## 🚀 Features
