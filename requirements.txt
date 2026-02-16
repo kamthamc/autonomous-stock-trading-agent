@@ -1,25 +1,40 @@
-aiohttp
-aiosqlite
-google-genai
-GoogleNews
-greenlet
-kiteconnect
-openai
-opentelemetry-api
-opentelemetry-exporter-otlp
-opentelemetry-instrumentation-aiohttp-client
-opentelemetry-sdk
-pandas
-pandas_ta
-plotly
-pydantic
-pydantic-settings
-python-dotenv
-pytz
-robin_stocks
-schedule
-sqlmodel
-streamlit
-structlog
-yfinance
-breeze-connect
+# Core
+aiohttp>=3.9,<4
+aiosqlite>=0.20,<1
+greenlet>=3.0,<4
+pandas>=2.0,<3
+pydantic>=2.0,<3
+pydantic-settings>=2.0,<3
+python-dotenv>=1.0,<2
+pytz>=2024.1
+sqlmodel>=0.0.14,<1
+structlog>=24.0,<25
+
+# AI / LLM
+google-genai>=1.0,<2
+openai>=1.0,<2
+
+# Market Data & Analysis
+exchange_calendars>=4.3,<5
+GoogleNews>=1.6,<2
+pandas_ta>=0.3,<1
+yfinance>=0.2,<1
+
+# Broker SDKs
+breeze-connect>=1.0,<2
+kiteconnect>=5.0,<6
+pyotp>=2.9,<3
+robin_stocks>=3.0,<4
+
+# Dashboard
+plotly>=5.0,<6
+streamlit>=1.30,<2
+
+# Observability
+opentelemetry-api>=1.20,<2
+opentelemetry-exporter-otlp>=1.20,<2
+opentelemetry-instrumentation-aiohttp-client>=0.41b0,<1
+opentelemetry-sdk>=1.20,<2
+
+# Scheduler
+schedule>=1.2,<2

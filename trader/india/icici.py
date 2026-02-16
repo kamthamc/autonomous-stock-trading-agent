@@ -3,26 +3,36 @@ from decimal import Decimal
 from typing import Dict, Any, Optional
 from datetime import datetime
 from breeze_connect import BreezeConnect
-from config import settings
-from .base import Broker, Order, Position
+from agent_config import settings
+from .base import IndiaBroker
+from ..base import Order, Position
 
 logger = structlog.get_logger()
 
-class ICICITrader(Broker):
+class ICICITrader(IndiaBroker):
     """
-    ICICI Direct Broker Implementation using breeze-connect.
+    ICICI Direct / Breeze broker — Indian market.
+    
+    Symbol format: plain stock code (e.g. "RELIANCE", "TCS").
     """
+
     def __init__(self):
         self.breeze = BreezeConnect(api_key=settings.icici_api_key)
         self.is_authenticated = False
         self.session_token = settings.icici_session_token
         self.secret_key = settings.icici_secret_key
 
+    def get_exchange_symbol(self, symbol: str) -> str:
+        """
+        Breeze uses plain stock codes.
+        
+        Examples:
+            "RELIANCE.NS" -> "RELIANCE"
+            "TCS.BO"      -> "TCS"
+        """
+        return self.normalize_symbol(symbol)
+
     async def authenticate(self) -> bool:
-        """
-        Authenticates with ICICI Direct API.
-        Requires a valid session_token generate from the login URL.
-        """
         if not settings.icici_api_key or not self.session_token:
             logger.warning("icici_credentials_missing")
             return False
@@ -40,24 +50,20 @@ class ICICITrader(Broker):
             return False
 
     async def get_quote(self, symbol: str) -> Decimal:
-        """
-        Fetches LTP for a symbol. 
-        Symbol format expected: "INFY" (Automatically maps to NSE).
-        """
         if not self.is_authenticated: return Decimal(0)
         try:
-            # Defaulting to NSE Equity
+            exchange_symbol = self.get_exchange_symbol(symbol)
+            exchange = self.detect_exchange(symbol)
+            
             data = self.breeze.get_quotes(
-                stock_code=symbol,
-                exchange_code="NSE",
+                stock_code=exchange_symbol,
+                exchange_code=exchange,
                 expiry_date="",
                 product_type="cash",
                 right="",
                 strike_price=""
             )
             if data and 'Success' in data and data['Success']:
-                # Parse LTP. Structure varies, usually check 'ltt' or list
-                # Breeze API returns a list in 'Success' usually
                  quotes = data['Success']
                  if quotes and len(quotes) > 0:
                      return Decimal(str(quotes[0]['ltp']))
@@ -73,21 +79,16 @@ class ICICITrader(Broker):
             positions = {}
             if response and 'Success' in response and response['Success']:
                 for p in response['Success']:
-                    # Map breeze fields to Position model
                     symbol = p.get('stock_code', 'UNKNOWN')
                     qty = Decimal(str(p.get('quantity', 0)))
                     avg_price = Decimal(str(p.get('average_price', 0)))
-                    market_val = Decimal(0) # Breeze might not send MV directly
-                    
-                    # We might need to fetch current price to calc MV/PnL if not provided
-                    # For now simplified
                     
                     positions[symbol] = Position(
                         symbol=symbol,
                         quantity=qty,
                         average_price=avg_price,
-                        current_price=avg_price, # Placeholder
-                        market_value=market_val,
+                        current_price=avg_price,
+                        market_value=Decimal(0),
                         unrealized_pnl=Decimal(0)
                     )
             return positions
@@ -101,7 +102,6 @@ class ICICITrader(Broker):
             response = self.breeze.get_funds()
             if response and 'Success' in response and response['Success']:
                 funds = response['Success']
-                # Breeze returns generic funds details
                 return Decimal(str(funds.get('bank_balance', 0)))
             return Decimal(0)
         except Exception as e:
@@ -113,13 +113,14 @@ class ICICITrader(Broker):
             return Order(order_id="N/A", symbol=symbol, side=side, quantity=quantity, status="REJECTED", timestamp=datetime.now())
 
         try:
+            exchange_symbol = self.get_exchange_symbol(symbol)
+            exchange = self.detect_exchange(symbol)
             action = "buy" if side.lower() == "buy" else "sell"
             
-            # Place Order
             response = self.breeze.place_order(
-                stock_code=symbol,
-                exchange_code="NSE",
-                product="cash", # CNC/Delivery
+                stock_code=exchange_symbol,
+                exchange_code=exchange,
+                product="cash",
                 action=action,
                 order_type=order_type,
                 stoploss="0",
@@ -134,13 +135,13 @@ class ICICITrader(Broker):
             if response and 'Success' in response and response['Success']:
                 order_id = response['Success']['order_id']
                 status = "PENDING"
-                logger.info("icici_order_placed", order_id=order_id, symbol=symbol)
+                logger.info("icici_order_placed", order_id=order_id, symbol=exchange_symbol, exchange=exchange)
             else:
                  logger.error("icici_order_failed", response=response)
 
             return Order(
                 order_id=order_id,
-                symbol=symbol,
+                symbol=exchange_symbol,
                 side=side,
                 quantity=quantity,
                 price=price,
@@ -151,7 +152,5 @@ class ICICITrader(Broker):
             logger.error("icici_place_order_error", error=str(e))
             return Order(order_id="ERROR", symbol=symbol, side=side, quantity=quantity, status="ERROR", timestamp=datetime.now())
 
-    async def get_option_chain(self, symbol: str) -> Any:
-        # Breeze has get_option_chain_quotes
-        # Not fully implemented yet
+    async def get_option_chain(self, symbol: str) -> list:
         return []

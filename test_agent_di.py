@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, AsyncMock
 # Adjust path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from config import settings
+from agent_config import settings
 from strategy.engine import StrategyEngine
 from strategy.risk import RiskManager
 from strategy.ai import AISignal, AIAnalyzer

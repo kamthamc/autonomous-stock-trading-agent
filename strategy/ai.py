@@ -1,18 +1,81 @@
 import asyncio
+import hashlib
 import json
+import time as time_module
+from collections import OrderedDict
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from google import genai
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 import structlog
 import os
 import sys
 
 # Import settings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import settings
+from agent_config import settings
 
 logger = structlog.get_logger()
+
+
+# ──────────────────────────────────────────────
+# LLM Response Cache
+# ──────────────────────────────────────────────
+class LLMCache:
+    """
+    In-memory TTL cache for LLM responses.
+    
+    - Key: SHA-256 hash of the full prompt text
+    - TTL: configurable (default 15 min — market data shifts slowly within a cycle)
+    - Max entries: LRU eviction when full
+    - Thread-safe enough for asyncio (single-threaded event loop)
+    """
+    
+    def __init__(self, ttl_seconds: int = 900, max_entries: int = 200):
+        self.ttl = ttl_seconds
+        self.max_entries = max_entries
+        self._cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._hits = 0
+        self._misses = 0
+    
+    @staticmethod
+    def _hash_prompt(prompt: str) -> str:
+        return hashlib.sha256(prompt.encode()).hexdigest()
+    
+    def get(self, prompt: str) -> Optional[Any]:
+        key = self._hash_prompt(prompt)
+        if key in self._cache:
+            ts, value = self._cache[key]
+            if time_module.time() - ts < self.ttl:
+                self._cache.move_to_end(key)  # refresh LRU position
+                self._hits += 1
+                return value
+            else:
+                del self._cache[key]  # expired
+        self._misses += 1
+        return None
+    
+    def put(self, prompt: str, value: Any) -> None:
+        key = self._hash_prompt(prompt)
+        self._cache[key] = (time_module.time(), value)
+        self._cache.move_to_end(key)
+        # Evict oldest if over limit
+        while len(self._cache) > self.max_entries:
+            self._cache.popitem(last=False)
+    
+    @property
+    def stats(self) -> dict:
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": f"{(self._hits / total * 100):.1f}%" if total > 0 else "0%",
+            "entries": len(self._cache),
+        }
+
+
+# Shared cache instance (lives for the duration of the process)
+_llm_cache = LLMCache(ttl_seconds=900, max_entries=200)
 
 class AISignal(BaseModel):
     decision: Literal["BUY_CALL", "BUY_PUT", "BUY_STOCK", "SELL", "HOLD"]
@@ -21,6 +84,12 @@ class AISignal(BaseModel):
     recommended_option: Optional[str] = Field(None, description="Recommended option contract (e.g. AAPL 150 CALL 2023-10-27)")
     stop_loss_suggestion: Optional[float] = None
     take_profit_suggestion: Optional[float] = None
+
+class RiskReviewResult(BaseModel):
+    """Structured result from the devil's advocate review."""
+    is_approved: bool
+    decision: str  # "APPROVE" or "REJECT"
+    reasoning: str
 
 class AIAnalyzer:
     def __init__(self):
@@ -41,7 +110,7 @@ class AIAnalyzer:
         else:
             # Fallback to standard OpenAI
             self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-            self.model = "gpt-5-turbo"
+            self.model = "gpt-5"
 
     def _format_options_table(self, options: list, current_price: float) -> str:
         """Formats the top 5 liquid calls and puts into a string table."""
@@ -71,12 +140,28 @@ class AIAnalyzer:
             
         return table
 
-    async def analyze(self, symbol: str, price: float, tech: dict, news: list, options: list) -> AISignal:
-        """Generates a trading signal using LLM."""
+    async def analyze(self, symbol: str, price: float, tech: dict, news: list, options: list, earnings: dict = None) -> AISignal:
+        """Generates a trading signal using LLM. Results are cached by prompt hash."""
+        from database.db import save_api_call_log
+        from database.models import APICallLog
+        from trader.router import BrokerRouter
         
         # Construct Prompt
         news_summary = "\n".join([f"- {n.title} ({n.source})" for n in news[:5]])
         options_table = self._format_options_table(options, price)
+        
+        earnings_section = ""
+        if earnings:
+            earnings_section = f"""
+        ⚠️ EARNINGS ALERT:
+        - Next Earnings Date: {earnings.get('next_earnings_date', 'Unknown')}
+        - Days Until Earnings: {earnings.get('days_until_earnings', 'Unknown')}
+        - EPS Estimate: {earnings.get('eps_estimate', 'N/A')}
+        - Revenue Estimate: {earnings.get('revenue_estimate', 'N/A')}
+        
+        IMPORTANT: Earnings announcements can cause significant volatility. Factor this into your risk assessment.
+        If earnings are within 3 days, prefer HOLD unless the setup is very strong.
+        """
         
         prompt = f"""
         You are an expert autonomous stock trader. Analyze the following data for {symbol} and provide a trading decision.
@@ -91,7 +176,7 @@ class AIAnalyzer:
         
         Options Chain Analysis:
         {options_table}
-        
+        {earnings_section}
         Goal: Optimal Profit with Managed Risk. Prefer high probability setups. 
         If recommending BUY_CALL or BUY_PUT, YOU MUST SELECT the best specific contract from the Options Chain table above and populate 'recommended_option'.
         
@@ -106,10 +191,34 @@ class AIAnalyzer:
         }}
         """
         
+        # ── Cache check ──
+        cached = _llm_cache.get(prompt)
+        if cached is not None:
+            logger.info("llm_cache_hit", symbol=symbol, source="ai_analyze",
+                       cache_stats=_llm_cache.stats)
+            try:
+                await save_api_call_log(APICallLog(
+                    source="ai_analyze_cached",
+                    provider=self.provider,
+                    endpoint="cache",
+                    symbol=symbol,
+                    region=BrokerRouter.detect_region(symbol),
+                    latency_ms=0,
+                    success=True,
+                ))
+            except Exception:
+                pass
+            return cached
+        
+        # ── LLM call ──
         content = None
+        start_time = time_module.perf_counter()
+        prompt_tokens = completion_tokens = total_tokens = None
+        success = True
+        error_msg = None
+        
         try:
             if self.provider == "gemini":
-                # Google Gemini Call using new SDK
                 response = await self.gemini_client.aio.models.generate_content(
                     model=self.gemini_model,
                     contents=prompt,
@@ -118,40 +227,72 @@ class AIAnalyzer:
                 content = response.text
                 
             else:
-                # OpenAI / Azure Call
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": "You are a professional algorithmic trader. Respond only in valid JSON."},
                         {"role": "user", "content": prompt}
                     ],
-                    # temperature=0.2, # Removed as some Azure models only support default (1.0)
                     response_format={"type": "json_object"}
                 )
                 content = response.choices[0].message.content
+                
+                # Extract token usage from OpenAI response
+                if hasattr(response, 'usage') and response.usage:
+                    prompt_tokens = response.usage.prompt_tokens
+                    completion_tokens = response.usage.completion_tokens
+                    total_tokens = response.usage.total_tokens
             
             # Parse JSON
-            # Sometimes LLMs wrap json in ```json ... ```
             if content and "```json" in content:
                 content = content.replace("```json", "").replace("```", "")
-            if content and "```" in content: # Generic code block
+            if content and "```" in content:
                 content = content.replace("```", "")
                 
             data = json.loads(content.strip())
-            return AISignal(**data)
+            result = AISignal(**data)
+            
+            # ── Cache store ──
+            _llm_cache.put(prompt, result)
+            return result
 
         except Exception as e:
+            success = False
+            error_msg = str(e)
             logger.error("ai_analysis_error", symbol=symbol, provider=self.provider, error=str(e), content_preview=str(content)[:100] if content else "None")
             return AISignal(decision="HOLD", confidence=0.0, reasoning=f"Error ({self.provider}): {str(e)}")
+        
+        finally:
+            latency_ms = int((time_module.perf_counter() - start_time) * 1000)
+            try:
+                await save_api_call_log(APICallLog(
+                    source="ai_analyze",
+                    provider=self.provider,
+                    endpoint=getattr(self, 'model', getattr(self, 'gemini_model', 'unknown')),
+                    symbol=symbol,
+                    region=BrokerRouter.detect_region(symbol),
+                    latency_ms=latency_ms,
+                    success=success,
+                    error_message=error_msg,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                ))
+            except Exception:
+                pass  # Don't let stats tracking break the main flow
 
-    async def review_trade(self, symbol: str, signal: AISignal, price: float, tech: dict, news: list) -> bool:
+    async def review_trade(self, symbol: str, signal: AISignal, price: float, tech: dict, news: list) -> RiskReviewResult:
         """
         Acts as a Risk Manager (Devil's Advocate).
         Reviews a generated signal and tries to find reasons to REJECT it.
-        Returns True if the trade survives the review, False if rejected.
+        Returns a RiskReviewResult with the decision and reasoning.
         """
+        from database.db import save_api_call_log
+        from database.models import APICallLog
+        from trader.router import BrokerRouter
+        
         if signal.decision == "HOLD":
-            return True
+            return RiskReviewResult(is_approved=True, decision="APPROVE", reasoning="HOLD signal, no review needed.")
 
         news_summary = "\n".join([f"- {n.title}" for n in news[:3]])
         
@@ -178,7 +319,32 @@ class AIAnalyzer:
         }}
         """
         
+        # ── Cache check ──
+        cached = _llm_cache.get(prompt)
+        if cached is not None:
+            logger.info("llm_cache_hit", symbol=symbol, source="ai_review",
+                       cache_stats=_llm_cache.stats)
+            try:
+                await save_api_call_log(APICallLog(
+                    source="ai_review_cached",
+                    provider=self.provider,
+                    endpoint="cache",
+                    symbol=symbol,
+                    region=BrokerRouter.detect_region(symbol),
+                    latency_ms=0,
+                    success=True,
+                ))
+            except Exception:
+                pass
+            return cached
+        
+        # ── LLM call ──
         content = None
+        start_time = time_module.perf_counter()
+        prompt_tokens = completion_tokens = total_tokens = None
+        success = True
+        error_msg = None
+        
         try:
             # Use same client/model as analyze
             if self.provider == "gemini":
@@ -198,6 +364,11 @@ class AIAnalyzer:
                     response_format={"type": "json_object"}
                 )
                 content = response.choices[0].message.content
+                
+                if hasattr(response, 'usage') and response.usage:
+                    prompt_tokens = response.usage.prompt_tokens
+                    completion_tokens = response.usage.completion_tokens
+                    total_tokens = response.usage.total_tokens
 
             if content and "```json" in content:
                 content = content.replace("```json", "").replace("```", "")
@@ -210,13 +381,44 @@ class AIAnalyzer:
             
             logger.info("ai_risk_review", symbol=symbol, decision=decision, reason=risk_reason)
             
-            return decision == "APPROVE"
+            result = RiskReviewResult(
+                is_approved=(decision == "APPROVE"),
+                decision=decision,
+                reasoning=risk_reason
+            )
+            
+            # ── Cache store ──
+            _llm_cache.put(prompt, result)
+            return result
 
         except Exception as e:
+            success = False
+            error_msg = str(e)
             logger.error("ai_risk_review_error", symbol=symbol, error=str(e))
-            # Fallback: If AI fails, strict mode says REJECT or standard says APPROVED?
-            # Let's fail safe -> Reject if we can't verify.
-            return False
+            return RiskReviewResult(
+                is_approved=False,
+                decision="REJECT",
+                reasoning=f"Review failed with error: {str(e)}"
+            )
+        
+        finally:
+            latency_ms = int((time_module.perf_counter() - start_time) * 1000)
+            try:
+                await save_api_call_log(APICallLog(
+                    source="ai_review",
+                    provider=self.provider,
+                    endpoint=getattr(self, 'model', getattr(self, 'gemini_model', 'unknown')),
+                    symbol=symbol,
+                    region=BrokerRouter.detect_region(symbol),
+                    latency_ms=latency_ms,
+                    success=success,
+                    error_message=error_msg,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                ))
+            except Exception:
+                pass
 
     async def generate_text(self, prompt: str) -> str:
         """Generates raw text response for a given prompt (used by Scanner)."""

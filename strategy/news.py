@@ -21,17 +21,19 @@ class NewsFetcher:
         self._executor = ThreadPoolExecutor(max_workers=3)
         self._cache: Dict[str, Dict] = {} # {query: {'timestamp': datetime, 'data': List[NewsItem]}}
         self._cache_ttl_seconds = 600 # 10 minutes
+        self._cache_lock = asyncio.Lock()
 
     async def get_news(self, query: str, period: str = '1d') -> List[NewsItem]:
         """Fetches news for a given query (e.g., 'AAPL stock' or 'Geopolitics')."""
         try:
-            # Check Cache
+            # Check Cache (with lock for thread safety)
             now = datetime.now()
-            if query in self._cache:
-                last_fetched = self._cache[query]['timestamp']
-                if (now - last_fetched).total_seconds() < self._cache_ttl_seconds:
-                    logger.debug("news_cache_hit", query=query)
-                    return self._cache[query]['data']
+            async with self._cache_lock:
+                if query in self._cache:
+                    last_fetched = self._cache[query]['timestamp']
+                    if (now - last_fetched).total_seconds() < self._cache_ttl_seconds:
+                        logger.debug("news_cache_hit", query=query)
+                        return self._cache[query]['data']
 
             loop = asyncio.get_running_loop()
             
@@ -55,10 +57,11 @@ class NewsFetcher:
             
             # Update Cache
             final_items = news_items[:10]
-            self._cache[query] = {
-                'timestamp': now,
-                'data': final_items
-            }
+            async with self._cache_lock:
+                self._cache[query] = {
+                    'timestamp': now,
+                    'data': final_items
+                }
             logger.info("news_fetched_fresh", query=query, count=len(final_items))
             
             return final_items

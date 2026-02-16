@@ -6,7 +6,7 @@ import os
 # Adjust path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from config import settings
+from agent_config import settings
 from strategy.engine import StrategyEngine
 from strategy.ai import AISignal
 

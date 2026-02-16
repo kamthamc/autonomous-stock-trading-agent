@@ -7,18 +7,29 @@ import structlog
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from .base import Broker, Position, Order
+from .base import USBroker
+from ..base import Position, Order
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import settings
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from agent_config import settings
 
 logger = structlog.get_logger()
 
-class RobinhoodTrader(Broker):
+class RobinhoodTrader(USBroker):
+    """
+    Robinhood broker — US market.
+    
+    Symbol format: plain uppercase ticker (e.g. "AAPL", "TSLA").
+    """
+
     def __init__(self):
         self._executor = ThreadPoolExecutor(max_workers=1)
         self.is_paper = settings.trading_mode == "paper"
+
+    def get_exchange_symbol(self, symbol: str) -> str:
+        """Robinhood uses plain uppercase tickers."""
+        return self.normalize_symbol(symbol)
 
     async def authenticate(self) -> bool:
         if self.is_paper:
@@ -40,15 +51,14 @@ class RobinhoodTrader(Broker):
             return False
 
     async def get_quote(self, symbol: str) -> Decimal:
+        exchange_symbol = self.get_exchange_symbol(symbol)
+        
         if self.is_paper:
-             # Simulate fetch using yfinance or random for paper
-             # For now return 0 to indicate simulation needs external data source 
-             # (In real engine, strategy passes price, broker just executes)
              return Decimal("0.00")
 
         try:
             loop = asyncio.get_running_loop()
-            quotes = await loop.run_in_executor(self._executor, lambda: rh.get_quotes(symbol))
+            quotes = await loop.run_in_executor(self._executor, lambda: rh.get_quotes(exchange_symbol))
             if quotes and len(quotes) > 0:
                 return Decimal(str(quotes[0]['last_trade_price']))
             return Decimal("0.00")
@@ -58,7 +68,7 @@ class RobinhoodTrader(Broker):
 
     async def get_positions(self) -> Dict[str, Position]:
         if self.is_paper:
-            return {} # Empty for paper start
+            return {}
 
         try:
             loop = asyncio.get_running_loop()
@@ -81,7 +91,7 @@ class RobinhoodTrader(Broker):
 
     async def get_account_balance(self) -> Decimal:
         if self.is_paper:
-            return Decimal(str(settings.max_capital))
+            return Decimal(str(settings.us_max_capital))
 
         try:
             loop = asyncio.get_running_loop()
@@ -92,16 +102,17 @@ class RobinhoodTrader(Broker):
             return Decimal("0.00")
 
     async def place_order(self, symbol: str, quantity: Decimal, side: str, order_type: str = "market", price: Optional[Decimal] = None) -> Order:
+        exchange_symbol = self.get_exchange_symbol(symbol)
         timestamp = datetime.now()
         
         if self.is_paper:
-            logger.info("rh_paper_order", symbol=symbol, side=side, quantity=quantity)
+            logger.info("rh_paper_order", symbol=exchange_symbol, side=side, quantity=quantity)
             return Order(
                 order_id=f"paper_{timestamp.timestamp()}",
-                symbol=symbol,
+                symbol=exchange_symbol,
                 side=side,
                 quantity=quantity,
-                price=price or Decimal("100.00"), # Dummy price
+                price=price or Decimal("100.00"),
                 status="filled",
                 timestamp=timestamp
             )
@@ -111,16 +122,15 @@ class RobinhoodTrader(Broker):
             
             def execute():
                 if side == "buy":
-                    return rh.order_buy_market(symbol, float(quantity))
+                    return rh.order_buy_market(exchange_symbol, float(quantity))
                 else:
-                    return rh.order_sell_market(symbol, float(quantity))
+                    return rh.order_sell_market(exchange_symbol, float(quantity))
             
             result = await loop.run_in_executor(self._executor, execute)
             
-            # Parse result (simplified)
             return Order(
                 order_id=result.get('id', 'unknown'),
-                symbol=symbol,
+                symbol=exchange_symbol,
                 side=side,
                 quantity=quantity,
                 status=result.get('state', 'queued'),
@@ -128,8 +138,7 @@ class RobinhoodTrader(Broker):
             )
         except Exception as e:
             logger.error("rh_order_failed", error=str(e))
-             # Return failed order
-            return Order(order_id="error", symbol=symbol, side=side, quantity=quantity, status="failed", timestamp=timestamp)
+            return Order(order_id="error", symbol=exchange_symbol, side=side, quantity=quantity, status="failed", timestamp=timestamp)
 
-    async def get_option_chain(self, symbol: str) -> Any:
-         pass
+    async def get_option_chain(self, symbol: str) -> list:
+         return []

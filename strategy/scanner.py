@@ -2,7 +2,7 @@ from typing import List
 import structlog
 from .news import NewsFetcher
 from .ai import AIAnalyzer
-from config import settings
+from agent_config import settings
 
 logger = structlog.get_logger()
 

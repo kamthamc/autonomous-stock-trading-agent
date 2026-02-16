@@ -25,6 +25,16 @@ class Broker(ABC):
     """Abstract base class for all broker implementations."""
 
     @abstractmethod
+    def get_exchange_symbol(self, symbol: str) -> str:
+        """
+        Converts a canonical symbol (e.g. "AAPL", "RELIANCE.NS") into the
+        format required by this broker's API.
+
+        Each broker overrides this to handle its own symbol conventions.
+        """
+        pass
+
+    @abstractmethod
     async def authenticate(self) -> bool:
         """Authenticates with the broker API."""
         pass
