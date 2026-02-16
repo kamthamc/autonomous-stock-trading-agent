@@ -62,6 +62,7 @@ async def trading_loop():
     # 1. Initialize Components
     rh_trader = RobinhoodTrader()
     kite_trader = ZerodhaTrader()
+    icici_trader = ICICITrader()
     
     # Inject primary broker (Robinhood) into MarketData for real-time pricing
     # (For a more complex setup, we'd need a multi-broker router)
@@ -81,6 +82,8 @@ async def trading_loop():
     await rh_trader.authenticate()
     if settings.kite_api_key:
         await kite_trader.authenticate()
+    if settings.icici_api_key:
+        await icici_trader.authenticate()
     
     # 3. Main Loop
     last_scan_time = datetime.min
@@ -113,17 +116,27 @@ async def trading_loop():
                 logger.info("trade_signal_received", signal=signal.model_dump())
                 
                 # Determine Broker
-                # Simple logic: NSE stocks usually have suffix or specific format. 
-                # Assuming standard US stocks for default.
+                # Priority: Robinhood (US) -> Zerodha (NSE) -> ICICI (NSE/BSE)
+                # Specific routing logic can be enhanced via config
                 broker = rh_trader
                 if ".NS" in signal.symbol or "^NSE" in signal.symbol:
-                    broker = kite_trader
+                    if settings.kite_api_key:
+                        broker = kite_trader
+                    elif settings.icici_api_key:
+                        # ICICI symbols usually don't have .NS, need to strip
+                        # For now, simplistic routing
+                        broker = icici_trader
                 
                 # Execute Trade
                 if settings.trading_mode == "live" or settings.trading_mode == "paper":
                     # For paper mode, the broker generic class handles simulation
+                    # For ICICI, we might need symbol mapping (remove .NS)
+                    trade_symbol = signal.symbol
+                    if broker == icici_trader:
+                        trade_symbol = trade_symbol.replace(".NS", "").replace("^NSE", "")
+                        
                     order = await broker.place_order(
-                        symbol=signal.symbol,
+                        symbol=trade_symbol,
                         quantity=signal.quantity,
                         side=signal.action.lower(), # BUY -> buy
                     )

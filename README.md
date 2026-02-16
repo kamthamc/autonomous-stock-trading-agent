@@ -14,7 +14,7 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
 
 ## 🚀 Features
 
-*   **Multi-Broker Support**: Integration with **Robinhood** (US) and **Zerodha** (India).
+*   **Multi-Broker Support**: Integration with **Robinhood** (US), **Zerodha** (India), and **ICICI Direct** (India).
 *   **AI-Driven Analysis**: Uses LLMs (OpenAI/Azure OpenAI/Gemini) to analyze technicals, news sentiment, and option chains.
 *   **Smart Risk Management**:
     *   **Capital Allocation**: Dynamic position sizing based on risk appetite.

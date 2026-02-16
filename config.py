@@ -16,6 +16,11 @@ class AgentSettings(BaseSettings):
     
     kite_api_key: Optional[str] = None
     kite_access_token: Optional[str] = None
+
+    # ICICI Direct
+    icici_api_key: Optional[str] = None
+    icici_secret_key: Optional[str] = None
+    icici_session_token: Optional[str] = None
     
     ai_provider: Literal["openai", "azure_openai", "gemini", "claude"] = "azure_openai"
     openai_api_key: Optional[str] = None
