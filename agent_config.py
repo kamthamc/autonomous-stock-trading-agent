@@ -1,7 +1,86 @@
 import os
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ──────────────────────────────────────────────
+# Per-Style Risk Profile
+# ──────────────────────────────────────────────
+class TradingStyleProfile(BaseModel):
+    """Risk appetite and behavior parameters for a trading style.
+
+    These act as defaults; per-region overrides in the .env still take
+    precedence for capital limits.
+    """
+    name: str
+    max_risk_per_trade: float       # max loss as fraction of capital (0.02 = 2%)
+    trailing_stop_pct: float        # trail below high-watermark (0.03 = 3%)
+    min_upside_target_pct: float    # min gain before any partial sell
+    partial_sell_pct: float         # fraction to sell at each scale-out
+    max_scale_outs: int             # max partial sells before full exit
+    confidence_threshold: float     # AI signal must exceed this to act
+    llm_cache_ttl_seconds: int      # how long to cache LLM responses
+    stop_loss_check_interval: int   # seconds between fast risk checks
+    circuit_breaker_daily_loss_pct: float  # daily loss limit as pct of capital
+    max_daily_trades: int
+
+
+STYLE_PROFILES: Dict[str, TradingStyleProfile] = {
+    "intraday": TradingStyleProfile(
+        name="intraday",
+        max_risk_per_trade=0.02,
+        trailing_stop_pct=0.015,
+        min_upside_target_pct=0.02,
+        partial_sell_pct=0.50,
+        max_scale_outs=2,
+        confidence_threshold=0.60,
+        llm_cache_ttl_seconds=300,    # 5 min
+        stop_loss_check_interval=10,
+        circuit_breaker_daily_loss_pct=0.05,
+        max_daily_trades=50,
+    ),
+    "short_term": TradingStyleProfile(
+        name="short_term",
+        max_risk_per_trade=0.03,
+        trailing_stop_pct=0.03,
+        min_upside_target_pct=0.05,
+        partial_sell_pct=0.50,
+        max_scale_outs=2,
+        confidence_threshold=0.55,
+        llm_cache_ttl_seconds=900,    # 15 min
+        stop_loss_check_interval=30,
+        circuit_breaker_daily_loss_pct=0.05,
+        max_daily_trades=30,
+    ),
+    "long_term": TradingStyleProfile(
+        name="long_term",
+        max_risk_per_trade=0.05,
+        trailing_stop_pct=0.08,
+        min_upside_target_pct=0.15,
+        partial_sell_pct=0.25,
+        max_scale_outs=3,
+        confidence_threshold=0.50,
+        llm_cache_ttl_seconds=1800,   # 30 min
+        stop_loss_check_interval=60,
+        circuit_breaker_daily_loss_pct=0.08,
+        max_daily_trades=10,
+    ),
+    "optimistic": TradingStyleProfile(
+        name="optimistic",
+        max_risk_per_trade=0.05,
+        trailing_stop_pct=0.04,
+        min_upside_target_pct=0.05,
+        partial_sell_pct=0.25,
+        max_scale_outs=3,
+        confidence_threshold=0.50,
+        llm_cache_ttl_seconds=600,    # 10 min
+        stop_loss_check_interval=10,
+        circuit_breaker_daily_loss_pct=0.10,
+        max_daily_trades=40,
+    ),
+}
+
 
 class StockConfig(BaseModel):
     ticker: str
@@ -95,9 +174,42 @@ class AgentSettings(BaseSettings):
     # Trading Limits (global)
     # ──────────────────────────────────────────────
     trading_mode: Literal["paper", "live"] = "paper"
-    trading_style: Literal["intraday", "short_term", "long_term"] = "intraday"
+    trading_style: Literal["intraday", "short_term", "long_term", "optimistic"] = "intraday"
     max_capital: float = 1000.00
     max_risk_per_trade: float = 0.02
+
+    # ──────────────────────────────────────────────
+    # Trailing Stop & Partial Exit (overrides style defaults)
+    # ──────────────────────────────────────────────
+    trailing_stop_pct: Optional[float] = None
+    min_upside_target_pct: Optional[float] = None
+    partial_sell_pct: Optional[float] = None
+    max_scale_outs: Optional[int] = None
+
+    # ──────────────────────────────────────────────
+    # Transaction Fee Estimates
+    # ──────────────────────────────────────────────
+    us_fee_per_trade: float = 0.50        # Flat $ per order (Robinhood: $0, but SEC/TAF ~$0.05-0.50)
+    india_fee_pct: float = 0.001          # 0.1% of trade value (brokerage + STT + exchange)
+    india_min_fee: float = 20.0           # Minimum ₹20 per trade
+
+    @property
+    def active_style_profile(self) -> TradingStyleProfile:
+        """Returns the risk profile for the current trading style,
+        with any .env overrides applied on top."""
+        base = STYLE_PROFILES.get(self.trading_style, STYLE_PROFILES["intraday"]).model_copy()
+        # Apply per-field overrides from .env if set
+        if self.max_risk_per_trade != 0.02:  # user changed from default
+            base.max_risk_per_trade = self.max_risk_per_trade
+        if self.trailing_stop_pct is not None:
+            base.trailing_stop_pct = self.trailing_stop_pct
+        if self.min_upside_target_pct is not None:
+            base.min_upside_target_pct = self.min_upside_target_pct
+        if self.partial_sell_pct is not None:
+            base.partial_sell_pct = self.partial_sell_pct
+        if self.max_scale_outs is not None:
+            base.max_scale_outs = self.max_scale_outs
+        return base
 
     # ──────────────────────────────────────────────
     # Per-Region Watchlists (comma-separated tickers in .env)
@@ -112,14 +224,27 @@ class AgentSettings(BaseSettings):
         StockConfig(ticker="SPY"),
     ]
 
+    # Settable ticker lists (updated by dynamic config / dashboard)
+    _us_tickers_override: Optional[List[str]] = None
+    _india_tickers_override: Optional[List[str]] = None
+
     @property
     def us_tickers(self) -> List[str]:
         """Parsed list of US tickers from the comma-separated env var."""
+        if self._us_tickers_override is not None:
+            return self._us_tickers_override
         return [t.strip().upper() for t in self.us_watchlist.split(",") if t.strip()]
-    
+
+    @us_tickers.setter
+    def us_tickers(self, value: List[str]):
+        """Allow dynamic config to override tickers at runtime."""
+        self._us_tickers_override = value
+
     @property
     def india_tickers(self) -> List[str]:
         """Parsed list of India tickers. Auto-appends .NS if no suffix present."""
+        if self._india_tickers_override is not None:
+            return self._india_tickers_override
         tickers = []
         for t in self.india_watchlist.split(","):
             t = t.strip().upper()
@@ -129,6 +254,11 @@ class AgentSettings(BaseSettings):
                 t = f"{t}.NS"
             tickers.append(t)
         return tickers
+
+    @india_tickers.setter
+    def india_tickers(self, value: List[str]):
+        """Allow dynamic config to override tickers at runtime."""
+        self._india_tickers_override = value
 
     @property
     def all_tickers(self) -> List[str]:

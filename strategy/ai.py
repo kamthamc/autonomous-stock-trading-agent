@@ -26,9 +26,8 @@ class LLMCache:
     In-memory TTL cache for LLM responses.
     
     - Key: SHA-256 hash of the full prompt text
-    - TTL: configurable (default 15 min — market data shifts slowly within a cycle)
+    - TTL: configurable per trading style
     - Max entries: LRU eviction when full
-    - Thread-safe enough for asyncio (single-threaded event loop)
     """
     
     def __init__(self, ttl_seconds: int = 900, max_entries: int = 200):
@@ -47,11 +46,11 @@ class LLMCache:
         if key in self._cache:
             ts, value = self._cache[key]
             if time_module.time() - ts < self.ttl:
-                self._cache.move_to_end(key)  # refresh LRU position
+                self._cache.move_to_end(key)
                 self._hits += 1
                 return value
             else:
-                del self._cache[key]  # expired
+                del self._cache[key]
         self._misses += 1
         return None
     
@@ -59,7 +58,6 @@ class LLMCache:
         key = self._hash_prompt(prompt)
         self._cache[key] = (time_module.time(), value)
         self._cache.move_to_end(key)
-        # Evict oldest if over limit
         while len(self._cache) > self.max_entries:
             self._cache.popitem(last=False)
     
@@ -74,16 +72,19 @@ class LLMCache:
         }
 
 
-# Shared cache instance (lives for the duration of the process)
-_llm_cache = LLMCache(ttl_seconds=900, max_entries=200)
+# Cache TTL from active style profile
+_style_profile = settings.active_style_profile
+_llm_cache = LLMCache(ttl_seconds=_style_profile.llm_cache_ttl_seconds, max_entries=200)
 
 class AISignal(BaseModel):
     decision: Literal["BUY_CALL", "BUY_PUT", "BUY_STOCK", "SELL", "HOLD"]
     confidence: float = Field(..., description="0.0 to 1.0")
     reasoning: str
-    recommended_option: Optional[str] = Field(None, description="Recommended option contract (e.g. AAPL 150 CALL 2023-10-27)")
+    recommended_option: Optional[str] = Field(None, description="Recommended option contract")
     stop_loss_suggestion: Optional[float] = None
     take_profit_suggestion: Optional[float] = None
+    allocation_pct: Optional[float] = Field(None, description="Fraction of available capital to use (0.05 to 1.0)")
+    was_cache_hit: bool = False  # Set by the caller, not by the LLM
 
 class RiskReviewResult(BaseModel):
     """Structured result from the devil's advocate review."""
@@ -98,7 +99,6 @@ class AIAnalyzer:
         if self.provider == "azure_openai":
             self.client = AsyncOpenAI(
                 api_key=settings.azure_openai_api_key,
-                # api_version=settings.azure_openai_api_version,
                 base_url=settings.azure_openai_endpoint
             )
             self.model = settings.azure_openai_deployment_name
@@ -108,7 +108,6 @@ class AIAnalyzer:
             self.gemini_model = "gemini-1.5-pro-latest"
             
         else:
-            # Fallback to standard OpenAI
             self.client = AsyncOpenAI(api_key=settings.openai_api_key)
             self.model = "gpt-5"
 
@@ -117,12 +116,8 @@ class AIAnalyzer:
         if not options:
             return "No options data available."
 
-        # Separate Calls and Puts
         calls = [o for o in options if o.option_type == 'call']
         puts = [o for o in options if o.option_type == 'put']
-
-        # Sort by Volume (Liquidity) and filter near ATM
-        # Simple heuristic: Top 5 by Volume
         top_calls = sorted(calls, key=lambda x: x.volume, reverse=True)[:5]
         top_puts = sorted(puts, key=lambda x: x.volume, reverse=True)[:5]
 
@@ -140,6 +135,77 @@ class AIAnalyzer:
             
         return table
 
+    def _get_strategy_prompt(self) -> tuple[str, str]:
+        """Returns (persona_name, goal_instruction) based on trading style."""
+        style = settings.trading_style
+        
+        if style == "optimistic":
+            return "OPTIMISTIC MOMENTUM TRADER", """
+            Goal: Maximize AGGRESSIVE upside capture. Buy with conviction, trail to the top, take partial profits.
+
+            STRATEGY CRITERIA:
+            1. **Bias**: DEFAULT TO BUY unless there is a CLEAR, IMMEDIATE threat.
+               - "Might go down" is NOT a reason to hold. RSI overbought in a strong trend is a BUY signal.
+               - Only HOLD if the stock is in a CONFIRMED downtrend (Lower Lows on Daily + Bearish MACD).
+
+            2. **Entry Sizing** (set allocation_pct):
+               - Strong momentum + positive news + favorable macro → allocation_pct: 0.30 (aggressive)
+               - Standard conviction → allocation_pct: 0.15 (normal)
+               - Uncertain but potential → allocation_pct: 0.08 (small starter)
+
+            3. **Exit Logic** (CRITICAL — DO NOT SELL EVERYTHING AT ONCE):
+               - If news is catastrophic (fraud, bankruptcy, SEC probe) → SELL with allocation_pct: 1.0 (full exit)
+               - If moderately negative → SELL with allocation_pct: 0.50 (half exit)
+               - For profit-taking → let trailing stop and partial sell system handle it (signal HOLD)
+               - Only signal SELL if there's an ACTIVE reason to exit NOW.
+
+            4. **Macro Awareness**:
+               - Positive geopolitics (trade deals, stimulus, rate cuts) → increase allocation_pct by +0.10
+               - Company buybacks, guidance raises, new contracts → increase confidence +0.15
+               - Competitor weakness → BUY the strong player more aggressively
+               - B2B supply chain growth → BUY supply chain beneficiaries
+               - Negative macro (war, policy risk) → reduce allocation_pct, DON'T avoid entirely
+
+            5. **News Impact**: Consider ONLY genuinely actionable news. Ignore generic market commentary.
+               - If all news is old/recycled, treat as neutral — DON'T let stale headlines weigh decisions.
+
+            6. **Cost Awareness**: Each trade has transaction fees. Avoid churning (buying and selling frequently).
+               - Don't signal SELL just because of a tiny dip. Trailing stop handles that.
+            """
+        
+        elif style == "intraday":
+            return "INTRADAY SCALPER", """
+            Goal: Maximize INTRADAY profit. Focus on immediate price action.
+            
+            STRATEGY CRITERIA:
+            1. **Trend & Momentum**: VWAP: bullish if Price > VWAP. RSI extremes for reversals.
+            2. **Valid Setups**: Breakout (Vol > 1.2x avg), Pullback to EMA, Mean Reversion at extremes.
+            3. **Risk**: Stop Loss 0.5-1.5%. Take Profit at next technical level.
+            4. **Sizing**: allocation_pct 0.10-0.20 per trade. Don't oversize intraday.
+            """
+        
+        elif style == "long_term":
+            return "VALUE INVESTOR", """
+            Goal: Long-term capital appreciation. Focus on fundamentals and macro trends.
+            
+            STRATEGY CRITERIA:
+            1. **Business Quality**: Consistent earnings growth, wide moat.
+            2. **Valuation**: Reasonable P/E? RSI oversold on Weekly?
+            3. **Execution**: Buy dips to 200-day SMA in strong uptrends.
+            4. **Sizing**: allocation_pct 0.20-0.40 for conviction buys. Small starters at 0.10.
+            """
+        
+        else:  # short_term
+            return "SWING TRADER", """
+            Goal: Capture SWING moves (2-10 days). Focus on Daily/4H structure.
+            
+            STRATEGY CRITERIA:
+            1. **Market Structure**: Higher Highs/Higher Lows (Uptrend).
+            2. **Key Levels**: Buy at Support/Trendline retest. Sell at Resistance.
+            3. **Oscillators**: MACD Crossover or RSI divergence.
+            4. **Sizing**: allocation_pct 0.15-0.25. Conservative for unclear setups.
+            """
+
     async def analyze(self, symbol: str, price: float, tech: dict, news: list, options: list, earnings: dict = None, cross_impact: str = None) -> AISignal:
         """Generates a trading signal using LLM. Results are cached by prompt hash."""
         from database.db import save_api_call_log
@@ -147,7 +213,7 @@ class AIAnalyzer:
         from trader.router import BrokerRouter
         
         # Construct Prompt
-        news_summary = "\n".join([f"- {n.title} ({n.source})" for n in news[:5]])
+        news_summary = "\n".join([f"- [{n.sentiment.upper()}] {n.title} ({n.source})" for n in news[:5]])
         options_table = self._format_options_table(options, price)
         
         earnings_section = ""
@@ -159,7 +225,7 @@ class AIAnalyzer:
         - EPS Estimate: {earnings.get('eps_estimate', 'N/A')}
         - Revenue Estimate: {earnings.get('revenue_estimate', 'N/A')}
         
-        IMPORTANT: Earnings announcements can cause significant volatility. Factor this into your risk assessment.
+        IMPORTANT: Earnings can cause significant volatility. Factor into risk assessment.
         If earnings are within 3 days, prefer HOLD unless the setup is very strong.
         """
         
@@ -167,57 +233,12 @@ class AIAnalyzer:
         if cross_impact:
             cross_impact_section = f"""
         🔗 RELATED STOCKS / CROSS-IMPACT:
-        The following correlated stocks have notable recent activity that may affect {symbol}:
         {cross_impact}
         
-        IMPORTANT: Consider sector contagion, supply chain effects, and competitor dynamics.
-        Strong moves or earnings from competitors/suppliers/customers can signal sector-wide trends.
+        Consider sector contagion, supply chain effects, and competitor dynamics.
         """
         
-        
-        # Select Strategy Persona based on Config
-        style = settings.trading_style
-        if style == "intraday":
-            strategy_persona = "INTRADAY SCALPER"
-            goal_instruction = """
-            Goal: Maximize INTRADAY profit. Focus on immediate price action (1-min to 15-min charts).
-            
-            STRATEGY CRITERIA:
-            1. **Trend & Momentum**:
-               - **VWAP**: bullish if Price > VWAP; bearish if Price < VWAP.
-               - **RSI (14)**: Look for reversals at extremes (>70 sell, <30 buy) OR momentum breakouts (crossing 50).
-            
-            2. **Valid Setups**:
-               - **Breakout**: Price clears resistance with Volume > 1.2x average.
-               - **Pullback**: Retest of broken resistance or moving average (EMA 9/20) holding support.
-               - **Mean Reversion**: Extreme extension from EMA + Reversal Candle (Hammer/Shooting Star).
-               
-            3. **Risk Management**:
-               - Stop Loss must be TIGHT (0.5% - 1.5%).
-               - Take Profit at next technical level (Pivot/High of Day).
-               - If choppy/sideways, signal HOLD.
-            """
-        elif style == "long_term":
-            strategy_persona = "VALUE INVESTOR"
-            goal_instruction = """
-            Goal: Long-term capital appreciation. Focus on fundamentals and macro trends.
-            
-            STRATEGY CRITERIA:
-            1. **Business Quality**: Consistent earnings growth, wide moat.
-            2. **Valuation**: Is P/E reasonable? RSI oversold on Weekly?
-            3. **Execution**: Buy dips to 200-day SMA in strong uptrends.
-            """
-        else: # Default or short_term
-            strategy_persona = "SWING TRADER"
-            goal_instruction = """
-            Goal: Capture SWING moves (2-10 days). Focus on Daily/4H structure.
-            
-            STRATEGY CRITERIA:
-            1. **Market Structure**: Look for Higher Highs/Higher Lows (Uptrend).
-            2. **Key Levels**: Buy at Support/Trendline retest. Sell at Resistance.
-            3. **Oscillators**: MACD Crossover or RSI divergence.
-            4. **Stop Loss**: Moderate (2% - 5%).
-            """
+        strategy_persona, goal_instruction = self._get_strategy_prompt()
 
         prompt = f"""
         You are an expert {strategy_persona}. Analyze the following data for {symbol} and provide a trading decision.
@@ -227,7 +248,7 @@ class AIAnalyzer:
         Technical Indicators:
         {json.dumps(tech, indent=2)}
         
-        Recent News:
+        Recent News (sentiment-tagged):
         {news_summary}
         
         Options Chain Analysis:
@@ -236,22 +257,23 @@ class AIAnalyzer:
         
         {goal_instruction}
 
-        Prioritize recent price action, RSI extremes, and immediate catalysts.
-        If recommending BUY_CALL or BUY_PUT, YOU MUST SELECT the best specific contract from the Options Chain table above and populate 'recommended_option'.
-        
-        CRITICAL: Be DECISIVE.
-        - If the setup is good, Confidence MUST be > 0.7.
-        - If the setup is weak or ambiguous, Confidence MUST be < 0.5.
-        - Avoid the "mushy middle" (0.5 - 0.65). If you are unsure, HOLD.
+        IMPORTANT RULES:
+        - Be DECISIVE. Good setup → confidence > 0.7. Weak/ambiguous → confidence < 0.5. Avoid mushy middle.
+        - If recommending BUY_CALL or BUY_PUT, SELECT a specific contract from the Options Chain.
+        - Set allocation_pct to indicate how much of available capital to invest (0.05 to 0.40).
+        - For SELL signals, set allocation_pct to indicate what fraction of the position to sell (0.25=partial, 1.0=full exit).
+        - Don't signal SELL just because of a small pullback — trailing stops handle that.
+        - DO NOT trade on the same news twice. If all news is generic/old, bias toward HOLD.
         
         Output JSON format ONLY:
         {{
             "decision": "BUY_CALL" | "BUY_PUT" | "BUY_STOCK" | "SELL" | "HOLD",
             "confidence": float (0.0-1.0),
-            "reasoning": "string explanation",
-            "recommended_option": "string (e.g. CALL 150 EXP 2023-10-27) or null",
+            "reasoning": "string explanation including which macro/news factors influenced your decision",
+            "recommended_option": "string or null",
             "stop_loss_suggestion": float,
-            "take_profit_suggestion": float
+            "take_profit_suggestion": float,
+            "allocation_pct": float (0.05 to 1.0 — how much capital to use for BUY, or position fraction to sell for SELL)
         }}
         """
         
@@ -272,6 +294,7 @@ class AIAnalyzer:
                 ))
             except Exception:
                 pass
+            cached.was_cache_hit = True
             return cached
         
         # ── LLM call ──
@@ -301,7 +324,6 @@ class AIAnalyzer:
                 )
                 content = response.choices[0].message.content
                 
-                # Extract token usage from OpenAI response
                 if hasattr(response, 'usage') and response.usage:
                     prompt_tokens = response.usage.prompt_tokens
                     completion_tokens = response.usage.completion_tokens
@@ -315,6 +337,7 @@ class AIAnalyzer:
                 
             data = json.loads(content.strip())
             result = AISignal(**data)
+            result.was_cache_hit = False
             
             # ── Cache store ──
             _llm_cache.put(prompt, result)
@@ -343,13 +366,12 @@ class AIAnalyzer:
                     total_tokens=total_tokens,
                 ))
             except Exception:
-                pass  # Don't let stats tracking break the main flow
+                pass
 
     async def review_trade(self, symbol: str, signal: AISignal, price: float, tech: dict, news: list) -> RiskReviewResult:
         """
         Acts as a Risk Manager (Devil's Advocate).
         Reviews a generated signal and tries to find reasons to REJECT it.
-        Returns a RiskReviewResult with the decision and reasoning.
         """
         from database.db import save_api_call_log
         from database.models import APICallLog
@@ -367,6 +389,7 @@ class AIAnalyzer:
         Proposed Trade: {signal.decision} @ ${price}
         Reasoning: {signal.reasoning}
         Confidence: {signal.confidence}
+        Suggested Allocation: {signal.allocation_pct or 'not specified'}
         
         Context:
         - Tech Indicators: {json.dumps(tech, indent=2)}
@@ -378,23 +401,16 @@ class AIAnalyzer:
         GUIDELINES:
         1. **Allow Non-Stock Assets**: ETFs, Commodities are VALID.
         2. **Value Macro Context**: War/Bonds/Rates are valid reasons.
-        3. **Confidence Filter**:
-           - **0.60 Threshold**: For Intraday/Swing strategies.
-           - If Confidence > 0.60: Reject ONLY if there is a **FATAL Technical Flaw** (e.g. Buying directly into major resistance, ignoring bearish divergence).
-           - Do NOT reject for generic reasons like "market uncertainty".
-        4. **Liquidity**: Do NOT reject Major Caps (Tata, Reliance, Apple, etc) for "low volume" unless it's < 10% of average.
+        3. **Confidence Filter**: If Confidence > 0.60, reject ONLY for FATAL flaws.
+        4. **Cost Awareness**: Consider if this trade is worth the transaction fees.
+           - Small allocation (<5% of capital) with low confidence is NOT worth the fees.
+        5. **Allocation Check**: Is the suggested allocation_pct reasonable for the risk level?
         
-        RISK CHECKLIST (Critique these points):
-        - **Trend Alignment**: Is the trade fighting a strong higher-timeframe trend without a reversal signal?
-        - **R:R Ratio**: Is the Stop Loss too wide (>2% for scalp)?
-        - **Overhead Supply**: Are we buying at the top of a range?
-        
-        Look for:
-        - Buying into resistance / Selling into support
-        - RSI extremes (Buying > 75, Selling < 25) - UNLESS Mean Reversion
-        - Counter-trend trades without confirmation
-        
-        NOTE: This is a SHORT-TERM strategy. Do not reject trades solely because "long term trend is bearish" if short-term momentum is bullish.
+        RISK CHECKLIST:
+        - Trend Alignment: Fighting a strong higher-timeframe trend?
+        - R:R Ratio: Stop Loss too wide?
+        - Overhead Supply: Buying at top of range?
+        - Fee Efficiency: Is the position large enough to justify transaction costs?
         
         Output JSON ONLY:
         {{
@@ -430,7 +446,6 @@ class AIAnalyzer:
         error_msg = None
         
         try:
-            # Use same client/model as analyze
             if self.provider == "gemini":
                 response = await self.gemini_client.aio.models.generate_content(
                     model=self.gemini_model,
@@ -471,7 +486,6 @@ class AIAnalyzer:
                 reasoning=risk_reason
             )
             
-            # ── Cache store ──
             _llm_cache.put(prompt, result)
             return result
 
@@ -508,14 +522,12 @@ class AIAnalyzer:
         """Generates raw text response for a given prompt (used by Scanner)."""
         try:
             if self.provider == "gemini":
-                # Gemini Text Generation
                 response = await self.gemini_client.aio.models.generate_content(
                     model=self.gemini_model,
                     contents=prompt
                 )
                 return response.text
             else:
-                # OpenAI / Azure Text Generation
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}]

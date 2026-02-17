@@ -23,6 +23,10 @@ class PositionRecord(BaseModel):
     symbol: str
     quantity: int = 0
     average_price: float = 0.0
+    high_watermark: float = 0.0       # Highest price since entry
+    trailing_stop_level: float = 0.0  # Current trailing stop price
+    scale_outs: int = 0               # Number of partial sells executed
+    min_upside_target: float = 0.0    # Min % gain before considering partial sell
 
 class RiskManager:
     """
@@ -36,12 +40,15 @@ class RiskManager:
                  max_capital: float = settings.max_capital,
                  max_per_trade: Optional[float] = None,
                  min_trade_value: float = 0.0,
-                 max_risk_per_trade: float = settings.max_risk_per_trade):
+                 max_risk_per_trade: Optional[float] = None):
+        
+        # Load style profile for defaults
+        profile = settings.active_style_profile
         
         self.region = region
         self.current_capital = Decimal(str(max_capital))
         self.initial_capital = Decimal(str(max_capital))
-        self.max_risk_per_trade = Decimal(str(max_risk_per_trade))
+        self.max_risk_per_trade = Decimal(str(max_risk_per_trade if max_risk_per_trade is not None else profile.max_risk_per_trade))
         self.min_trade_value = Decimal(str(min_trade_value))
         
         # Per-trade allocation limit
@@ -53,17 +60,27 @@ class RiskManager:
         # Position tracking
         self.positions: Dict[str, PositionRecord] = {}
         
-        # Circuit breaker: daily loss limit
+        # Circuit breaker: daily loss limit (from style profile)
         self._daily_loss = Decimal("0.0")
         self._daily_trade_count = 0
         self._current_date = date.today()
-        self.max_daily_loss = self.initial_capital * Decimal("0.05")  # 5% of initial capital
-        self.max_daily_trades = 50
+        self.max_daily_loss = self.initial_capital * Decimal(str(profile.circuit_breaker_daily_loss_pct))
+        self.max_daily_trades = profile.max_daily_trades
+        
+        # Trailing stop / partial sell config (from style profile)
+        self.trailing_stop_pct = profile.trailing_stop_pct
+        self.partial_sell_pct = profile.partial_sell_pct
+        self.max_scale_outs = profile.max_scale_outs
+        self.min_upside_target_pct = profile.min_upside_target_pct
         
         logger.info("risk_manager_initialized", 
                      region=region,
+                     style=profile.name,
                      capital=str(self.current_capital),
                      max_per_trade=str(self.max_capital_per_trade),
+                     max_risk_pct=str(self.max_risk_per_trade),
+                     trailing_stop_pct=self.trailing_stop_pct,
+                     min_upside=self.min_upside_target_pct,
                      min_trade_value=str(self.min_trade_value))
 
     def _reset_daily_counters_if_new_day(self):
@@ -223,15 +240,97 @@ class RiskManager:
             balance: Current available cash balance from the broker.
         """
         self.current_capital = balance
+        
+        # Preserve existing watermark / trailing stop data for known symbols
+        old_positions = dict(self.positions)
         self.positions.clear()
         
         for symbol, pos in positions.items():
+            old = old_positions.get(symbol)
+            current_price = float(pos.current_price) if hasattr(pos, 'current_price') else float(pos.average_price)
+            
             self.positions[symbol] = PositionRecord(
                 symbol=symbol,
                 quantity=int(pos.quantity),
-                average_price=float(pos.average_price)
+                average_price=float(pos.average_price),
+                high_watermark=max(current_price, old.high_watermark if old else 0.0),
+                trailing_stop_level=old.trailing_stop_level if old else 0.0,
+                scale_outs=old.scale_outs if old else 0,
+                min_upside_target=old.min_upside_target if old else self.min_upside_target_pct,
             )
             
         logger.info("risk_manager_synced", region=self.region, 
                     balance=str(self.current_capital), 
                     positions_count=len(self.positions))
+
+    # ──────────────────────────────────────────────
+    # Trailing Stop & Partial Exit
+    # ──────────────────────────────────────────────
+
+    def update_trailing_stop(self, symbol: str, current_price: float) -> Optional[float]:
+        """
+        Updates the trailing stop for a position.
+
+        The trailing stop ratchets UP as price makes new highs, but never
+        moves down.  Returns the new trailing stop level, or None if no
+        position is held.
+        """
+        pos = self.positions.get(symbol)
+        if not pos or pos.quantity <= 0:
+            return None
+
+        # Update high watermark
+        if current_price > pos.high_watermark:
+            pos.high_watermark = current_price
+
+        # Calculate new trailing stop level
+        new_stop = pos.high_watermark * (1.0 - self.trailing_stop_pct)
+
+        # Only ratchet UP, never down
+        if new_stop > pos.trailing_stop_level:
+            pos.trailing_stop_level = new_stop
+            logger.debug("trailing_stop_updated", symbol=symbol,
+                        high_watermark=f"{pos.high_watermark:.2f}",
+                        trailing_stop=f"{pos.trailing_stop_level:.2f}")
+
+        return pos.trailing_stop_level
+
+    def get_partial_sell_quantity(self, symbol: str, current_price: float) -> int:
+        """
+        Determines how many shares to sell for a partial exit.
+
+        Returns 0 if no partial sell is warranted (below min upside target
+        or max scale-outs already reached).
+        """
+        pos = self.positions.get(symbol)
+        if not pos or pos.quantity <= 0:
+            return 0
+
+        # Check if we've exceeded max scale-outs
+        if pos.scale_outs >= self.max_scale_outs:
+            return 0
+
+        # Check if min upside target is met
+        if pos.average_price <= 0:
+            return 0
+        pnl_pct = (current_price - pos.average_price) / pos.average_price
+        if pnl_pct < pos.min_upside_target:
+            return 0
+
+        # Calculate partial sell quantity
+        sell_qty = max(1, int(pos.quantity * self.partial_sell_pct))
+        # Never sell the last share via partial sell — leave for trailing stop
+        sell_qty = min(sell_qty, pos.quantity - 1) if pos.quantity > 1 else 0
+        return sell_qty
+
+    def record_partial_sell(self, symbol: str, quantity: int, price: float):
+        """Records a partial sell and increments the scale-out counter."""
+        pos = self.positions.get(symbol)
+        if pos:
+            pos.scale_outs += 1
+            # Raise the min upside target for next scale-out
+            pos.min_upside_target += self.min_upside_target_pct
+            logger.info("partial_sell_recorded", symbol=symbol,
+                       scale_out_number=pos.scale_outs,
+                       next_target=f"{pos.min_upside_target*100:.1f}%")
+        self.record_trade(symbol, "sell", quantity, price)

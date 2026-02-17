@@ -67,3 +67,7 @@ Macro/Political Sensitivities (scan news for these):
 ```
 
 This context prevents the AI from analyzing a stock in a vacuum. It helps it understand *why* a stock might be moving (e.g., "Sympathy move with NVDA") or identify risks (e.g., "Competitor earnings ahead").
+
+---
+
+**See Also:** [Architecture Overview](./architecture.md) for how the Cross-Impact Engine fits into the broader system.

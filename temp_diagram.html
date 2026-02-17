@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+
+<body>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    </script>
+    <div class="mermaid">
+        graph TD
+        User[User / Browser] -->|HTTP :8050| Dashboard[Dashboard SPA]
+        Dashboard -->|REST API| API[FastAPI Backend]
+
+        subgraph "Core Agent"
+        Main[main.py Orchestrator] --> Engine[Strategy Engine]
+        Engine -->|Fetch| MarketData[Market Data / News]
+        Engine -->|Analyze| AI[AI Agent / LLM]
+        AI -->|Generate| Signal[Trade Signal]
+        Signal -->|Review| Risk[Risk Manager / LLM]
+        Risk -->|Approve/Reject| Router[Broker Router]
+        end
+
+        subgraph "Execution"
+        Router -->|US| Robinhood[Robinhood API]
+        Router -->|India| Kite[Zerodha Kite API]
+        Router -->|India| Breeze[ICICI Breeze API]
+        end
+
+        subgraph "Data Persistence"
+        API <-->|Read/Write| TradingDB[(Trading DB)]
+            API <-->|Read/Write| ActivityDB[(Activity DB)]
+                Main -->|Log| TradingDB
+                Main -->|Log| ActivityDB
+                end
+    </div>
+</body>
+
+</html>

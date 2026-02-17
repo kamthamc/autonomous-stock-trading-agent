@@ -45,7 +45,7 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
   - `trading_agent.db` — Core data (signals, trades, market trends)
   - `activity_YYYY_MM.db` — High-volume operational data with monthly rotation (risk reviews, API call logs, agent events)
 - **API Call Tracking** — Every LLM/broker/data call is logged with latency, token usage, and success status
-- **Real-Time Dashboard** — Streamlit-based UI with auto-refresh, showing signals, trades, PnL, risk reviews, API stats, earnings calendar, and market status
+- **Real-Time Dashboard** — High-performance SPA with auto-refresh, showing signals, trades, PnL, risk reviews, API stats, earnings calendar, and market status
 
 ---
 
@@ -55,7 +55,8 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
 autonomous-stock-trading-agent/
 ├── main.py                  # Entry point — async event loop, ticker routing, market gating
 ├── agent_config.py          # Pydantic settings — env vars, watchlists, capital limits
-├── dashboard.py             # Streamlit real-time monitoring dashboard
+├── dashboard_api.py         # FastAPI backend for dashboard
+├── dashboard/               # SPA frontend (HTML/CSS/JS)
 ├── telemetry.py             # OpenTelemetry instrumentation
 ├── setup.sh                 # One-command project setup
 │
@@ -137,7 +138,8 @@ INDIA_WATCHLIST=RELIANCE,TCS,INFY,HDFCBANK
 python main.py
 
 # In another terminal — launch the dashboard
-streamlit run dashboard.py
+# In another terminal — launch the dashboard backend (access at http://localhost:8050)
+python dashboard_api.py
 ```
 
 ---
@@ -164,7 +166,7 @@ All configuration is via environment variables (`.env` file). See [`.env.example
 
 ## 📊 Dashboard
 
-The Streamlit dashboard provides real-time visibility into the agent's activity:
+The FastAPI + Vanilla JS dashboard provides real-time visibility into the agent's activity:
 
 | Section | Description |
 |---------|-------------|
@@ -222,7 +224,7 @@ Dependencies are organized into groups in `requirements.txt`:
 - **AI / LLM** — OpenAI, Gemini SDKs
 - **Market Data** — yfinance, exchange_calendars, pandas_ta
 - **Broker SDKs** — robin_stocks, kiteconnect, breeze-connect
-- **Dashboard** — Streamlit, Plotly
+- **Dashboard** — FastAPI, Uvicorn, Vanilla JS
 - **Observability** — OpenTelemetry
 
 ---

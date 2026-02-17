@@ -32,6 +32,8 @@ For each ticker in the watchlist, `engine.py` runs this pipeline:
    └── Trade execution (or paper simulation)
 ```
 
+> For a high-level view of how these components connect, see the **[Architecture Diagram](./architecture.md)**.
+
 ---
 
 ## AI Analysis (`ai.py`)

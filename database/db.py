@@ -17,7 +17,7 @@ from datetime import datetime
 import structlog
 
 from agent_config import settings
-from .models import Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog, AppConfig
+from .models import Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog, AppConfig, AIDecisionLog, NewsFingerprint
 
 logger = structlog.get_logger()
 
@@ -31,7 +31,7 @@ trading_session = sessionmaker(trading_engine, class_=AsyncSession, expire_on_co
 # ──────────────────────────────────────────────
 # Activity DB  (monthly rotation, high-volume)
 # ──────────────────────────────────────────────
-_ACTIVITY_TABLES = {"risk_reviews", "agent_events", "api_call_logs"}
+_ACTIVITY_TABLES = {"risk_reviews", "agent_events", "api_call_logs", "ai_decision_logs", "news_fingerprints"}
 
 # Cache: we keep one engine+session per month string to avoid re-creating them
 _activity_engines: dict = {}
@@ -248,3 +248,63 @@ async def get_api_call_stats(
         statement = statement.limit(limit)
         results = await session.execute(statement)
         return results.scalars().all()
+
+
+# ──────────────────────────────────────────────
+# AI Decision Logging  (activity DB)
+# ──────────────────────────────────────────────
+
+async def save_ai_decision_log(log: AIDecisionLog) -> AIDecisionLog:
+    """Persist every AI analysis decision for auditability."""
+    await _ensure_activity_tables()
+    session_factory = _get_activity_session()
+    async with session_factory() as session:
+        session.add(log)
+        await session.commit()
+        await session.refresh(log)
+        return log
+
+
+async def get_ai_decision_logs(
+    limit: int = 100,
+    symbol: Optional[str] = None,
+    decision: Optional[str] = None,
+) -> List[AIDecisionLog]:
+    """Query AI decision logs for the dashboard."""
+    await _ensure_activity_tables()
+    session_factory = _get_activity_session()
+    async with session_factory() as session:
+        statement = select(AIDecisionLog).order_by(AIDecisionLog.timestamp.desc())
+        if symbol:
+            statement = statement.where(AIDecisionLog.symbol == symbol)
+        if decision:
+            statement = statement.where(AIDecisionLog.decision == decision)
+        statement = statement.limit(limit)
+        results = await session.execute(statement)
+        return results.scalars().all()
+
+
+# ──────────────────────────────────────────────
+# News Fingerprinting  (activity DB)
+# ──────────────────────────────────────────────
+
+async def save_news_fingerprint(fp: NewsFingerprint) -> NewsFingerprint:
+    await _ensure_activity_tables()
+    session_factory = _get_activity_session()
+    async with session_factory() as session:
+        session.add(fp)
+        await session.commit()
+        await session.refresh(fp)
+        return fp
+
+
+async def is_news_seen(fingerprint: str) -> bool:
+    """Check if we already processed a news headline."""
+    await _ensure_activity_tables()
+    session_factory = _get_activity_session()
+    async with session_factory() as session:
+        statement = select(NewsFingerprint).where(
+            NewsFingerprint.fingerprint == fingerprint
+        ).limit(1)
+        results = await session.execute(statement)
+        return results.scalars().first() is not None

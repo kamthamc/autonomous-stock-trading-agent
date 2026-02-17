@@ -3,6 +3,7 @@ import structlog
 import sys
 import os
 from datetime import datetime
+from decimal import Decimal
 
 # Adjust path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -18,7 +19,6 @@ from strategy.risk import RiskManager
 logger = structlog.get_logger()
 
 # Configure Logging
-# Ensure log directory exists
 os.makedirs(settings.log_dir, exist_ok=True)
 
 structlog.configure(
@@ -38,7 +38,6 @@ structlog.configure(
 # File Handler
 import logging
 file_handler = logging.FileHandler(settings.log_file_path)
-# Use JSON Formatting for file so Dashboard can parse it
 json_formatter = structlog.stdlib.ProcessorFormatter(
     processor=structlog.processors.JSONRenderer(),
 )
@@ -69,7 +68,6 @@ def validate_config():
     """Validates that necessary configuration is present before starting the trading loop."""
     errors = []
     
-    # At least one AI provider must be configured
     ai = settings.ai_provider
     if ai == "openai" and not settings.openai_api_key:
         errors.append("AI_PROVIDER is 'openai' but OPENAI_API_KEY is not set.")
@@ -78,7 +76,6 @@ def validate_config():
     elif ai == "gemini" and not settings.gemini_api_key:
         errors.append("AI_PROVIDER is 'gemini' but GEMINI_API_KEY is not set.")
 
-    # At least one broker should be configured (or we're paper trading)
     if settings.trading_mode == "live":
         has_rh = settings.rh_username and settings.rh_password
         has_kite = settings.kite_api_key
@@ -86,7 +83,6 @@ def validate_config():
         if not (has_rh or has_kite or has_icici):
             errors.append("TRADING_MODE is 'live' but no broker credentials are configured.")
 
-    # Capital validation
     if settings.us_max_capital <= 0 and settings.india_max_capital <= 0:
         errors.append("At least one of US_MAX_CAPITAL or INDIA_MAX_CAPITAL must be > 0.")
     
@@ -96,7 +92,8 @@ def validate_config():
         return False
         
     logger.info("config_validation_passed", ai_provider=ai, mode=settings.trading_mode,
-                 us_capital=settings.us_max_capital, india_capital=settings.india_max_capital)
+                 us_capital=settings.us_max_capital, india_capital=settings.india_max_capital,
+                 trading_style=settings.trading_style)
     return True
 
 
@@ -170,7 +167,7 @@ async def load_dynamic_config(risk_managers=None):
                     logger.info("config_override", key="INDIA_TICKERS", count=len(settings.india_tickers))
                 except: pass
             
-            # Risk Updates
+            # Risk Updates (Decimal import is now at the top of the file)
             if risk_managers and "RISK_MAX_RISK_PCT" in config_map:
                 try:
                     risk_pct = Decimal(config_map["RISK_MAX_RISK_PCT"]) / 100
@@ -183,7 +180,6 @@ async def load_dynamic_config(risk_managers=None):
                 try:
                     alloc_pct = Decimal(config_map["RISK_MAX_ALLOC_PCT"]) / 100
                     for rm in risk_managers.values():
-                        # Update relative to CURRENT capital available
                         rm.max_capital_per_trade = rm.current_capital * alloc_pct
                     logger.info("config_risk_update", max_alloc_pct=str(alloc_pct))
                 except: pass
@@ -192,11 +188,18 @@ async def load_dynamic_config(risk_managers=None):
         logger.error("failed_to_load_dynamic_config", error=str(e))
 
 
+def estimate_fees(trade_value: float, region: str) -> float:
+    """Estimates transaction fees for a given trade value and region."""
+    if region == "IN":
+        return max(settings.india_min_fee, trade_value * settings.india_fee_pct)
+    else:
+        return settings.us_fee_per_trade
+
+
 async def execute_signals(signals, router, risk_managers):
     for signal in signals:
         logger.info("trade_signal_received", signal=signal.model_dump())
         
-        # Route to the correct broker for this symbol's region
         region = BrokerRouter.detect_region(signal.symbol)
         broker = router.get_broker_for_symbol(signal.symbol)
         
@@ -204,14 +207,17 @@ async def execute_signals(signals, router, risk_managers):
             logger.warning("no_broker_for_region", symbol=signal.symbol, region=region)
             continue
         
-        # Check market hours for the relevant region
+        # Map PARTIAL_SELL to SELL for the broker (brokers don't know about partial)
+        broker_side = signal.action.lower()
+        if broker_side == "partial_sell":
+            broker_side = "sell"
+        
+        # Check market hours for live mode
         if settings.trading_mode == "live":
-            # We are in analysis window, but market might not affectively be OPEN yet.
-            # Wait loop up to 5 minutes to catch the open.
             scan_start = datetime.now()
             while not router.is_market_open_for_symbol(signal.symbol):
                 elapsed = (datetime.now() - scan_start).total_seconds()
-                if elapsed > 300: # Wait max 5 mins
+                if elapsed > 300:
                     break
                 logger.info("waiting_market_open", symbol=signal.symbol, elapsed=int(elapsed))
                 await asyncio.sleep(10)
@@ -225,36 +231,65 @@ async def execute_signals(signals, router, risk_managers):
             order = await broker.place_order(
                 symbol=signal.symbol,
                 quantity=signal.quantity,
-                side=signal.action.lower(),
+                side=broker_side,
             )
             logger.info("order_placed", 
                         order_id=order.order_id, status=order.status,
-                        region=region)
+                        region=region, action=signal.action,
+                        quantity=signal.quantity)
+            
+            # Calculate fees and P&L
+            trade_value = signal.quantity * signal.price
+            fees = estimate_fees(trade_value, region)
+            fee_currency = "INR" if region == "IN" else "USD"
             
             # Record trade in the region's risk manager
             if order.status not in ("failed", "FAILED", "ERROR", "REJECTED"):
                 rm = risk_managers.get(region, risk_managers["US"])
-                rm.record_trade(
-                    symbol=signal.symbol,
-                    action=signal.action,
-                    quantity=signal.quantity,
-                    price=signal.price
-                )
+                
+                if signal.action == "PARTIAL_SELL":
+                    # Record partial sell in risk manager (updates scale_outs)
+                    rm.record_partial_sell(signal.symbol, signal.quantity, signal.price)
+                else:
+                    rm.record_trade(
+                        symbol=signal.symbol,
+                        action=signal.action,
+                        quantity=signal.quantity,
+                        price=signal.price
+                    )
+                
+                # Estimate P&L for sell trades
+                pnl = 0.0
+                if signal.action in ("SELL", "PARTIAL_SELL"):
+                    pos = rm.get_position(signal.symbol)
+                    if pos:
+                        avg_price = float(pos.average_price)
+                        pnl = (signal.price - avg_price) * signal.quantity
             
-            # Persist to DB
+            # Persist to DB with fee tracking
             await save_trade(Trade(
                 symbol=signal.symbol,
                 action=signal.action,
                 quantity=signal.quantity,
                 price=signal.price,
                 status=order.status,
-                order_id=order.order_id
+                order_id=order.order_id,
+                region=region,
+                estimated_fees=round(fees, 2),
+                net_pnl=round(pnl - fees, 2) if signal.action in ("SELL", "PARTIAL_SELL") else None,
+                fee_currency=fee_currency,
             ))
+            
+            logger.info("trade_recorded",
+                       symbol=signal.symbol, action=signal.action,
+                       fees=f"{fee_currency} {fees:.2f}",
+                       net_pnl=f"{pnl - fees:.2f}" if signal.action in ("SELL", "PARTIAL_SELL") else "N/A")
+                       
         except Exception as e:
             logger.error("trade_execution_failed", symbol=signal.symbol, error=str(e))
 
 async def trading_loop():
-    logger.info("agent_starting", mode=settings.trading_mode)
+    logger.info("agent_starting", mode=settings.trading_mode, style=settings.trading_style)
     
     # Validate configuration
     if not validate_config():
@@ -289,7 +324,6 @@ async def trading_loop():
     from trader.market_data import MarketDataFetcher
     from strategy.scanner import MarketScanner
     
-    # Use generic broker for data if specific one fails
     us_broker_for_data = router.get_broker_for_symbol("AAPL")
     market_data = MarketDataFetcher(broker=us_broker_for_data)
     
@@ -303,12 +337,13 @@ async def trading_loop():
     last_scan_time = datetime.min
     last_full_analysis_time = datetime.min
     is_paper = settings.trading_mode != "live"
+    style_profile = settings.active_style_profile
     
     from strategy.market_hours import filter_tickers_by_market_hours, get_market_status
     
     while True:
         try:
-            # Refresh config (Dashboard settings & Risk Params)
+            # Refresh config
             await load_dynamic_config(risk_managers)
             
             # CHECK KILL SWITCH
@@ -325,8 +360,7 @@ async def trading_loop():
             # Log market status
             market_status = get_market_status()
             
-            # --- Sync with Brokers (Always Sync) ---
-            # Sync US
+            # --- Sync with Brokers ---
             us_broker = router.get_broker_for_symbol("AAPL") 
             if us_broker and "US" in risk_managers:
                  try:
@@ -336,7 +370,6 @@ async def trading_loop():
                  except Exception as e:
                      logger.error("us_broker_sync_failed", error=str(e))
                  
-            # Sync India
             in_broker = router.get_broker_for_symbol("RELIANCE.NS")
             if in_broker and "IN" in risk_managers:
                  try:
@@ -346,16 +379,17 @@ async def trading_loop():
                  except Exception as e:
                      logger.error("india_broker_sync_failed", error=str(e))
             
-            # 1. Fast Stop-Loss Check (Every 10s)
+            # 1. Fast Risk Check (trailing stop + partial sell + hard stop)
             try:
                 sl_signals = await engine.check_risks(risk_managers)
                 if sl_signals:
-                    logger.info("executing_stop_loss_signals", count=len(sl_signals))
+                    logger.info("executing_risk_signals", count=len(sl_signals),
+                               actions=[s.action for s in sl_signals])
                     await execute_signals(sl_signals, router, risk_managers)
             except Exception as e:
                 logger.error("fast_risk_check_failed", error=str(e))
 
-            # 2. Daily Market Scan (Every 30m)
+            # 2. Market Scan (Every 30m — discovers new trending stocks)
             tickers = list(settings.all_tickers)
             if (current_time - last_scan_time).total_seconds() > 1800:
                 trending_tickers = await scanner.scan_market()
@@ -368,7 +402,7 @@ async def trading_loop():
 
             # 3. Full Analysis (Every 60s)
             if (current_time - last_full_analysis_time).total_seconds() > 60:
-                logger.info("starting_full_analysis_cycle")
+                logger.info("starting_full_analysis_cycle", style=settings.trading_style)
                 
                 # Filter tickers by regional market hours
                 active_tickers, skipped_tickers = filter_tickers_by_market_hours(tickers, paper_mode=is_paper)
@@ -382,12 +416,13 @@ async def trading_loop():
                     signals = await engine.run_cycle(active_tickers)
                     await execute_signals(signals, router, risk_managers)
                     
-                    # Log end-of-cycle status per region
+                    # Log end-of-cycle status
                     for rgn, rm in risk_managers.items():
                         logger.info("cycle_region_status", 
                                     region=rgn,
                                     capital_remaining=str(rm.current_capital),
-                                    open_positions=len(rm.positions))
+                                    open_positions=len(rm.positions),
+                                    daily_trades=rm.daily_trade_count)
                                     
                 last_full_analysis_time = current_time
             

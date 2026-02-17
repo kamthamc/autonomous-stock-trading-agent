@@ -71,7 +71,7 @@ modules = [
     ('structlog', 'structlog'),
     ('openai', 'openai'),
     ('yfinance', 'yfinance'),
-    ('streamlit', 'streamlit'),
+
     ('exchange_calendars', 'exchange_calendars'),
     ('pandas_ta', 'pandas_ta'),
     ('plotly', 'plotly'),
@@ -96,7 +96,7 @@ echo ""
 echo "  Quick start:"
 echo "    source .venv/bin/activate"
 echo "    python main.py              # Start the trading agent"
-echo "    streamlit run dashboard.py   # Launch the dashboard"
+echo "    python dashboard_api.py      # Launch the dashboard backend"
 echo ""
 echo "  📖 See docs/README.md for full documentation"
 echo "  ⚠️  Edit .env with your API keys before running"

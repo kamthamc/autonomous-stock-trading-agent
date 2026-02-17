@@ -25,7 +25,7 @@ Welcome to the Autonomous Stock Trading Agent documentation.
 ```bash
 ./setup.sh              # One-command setup
 python main.py          # Start the agent
-streamlit run dashboard.py  # Launch dashboard
+python dashboard_api.py  # Launch dashboard backend
 ```
 
 See the main [README](../README.md) for full quick-start instructions.

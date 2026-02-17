@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="QUANTUM — Autonomous Trading Agent Dashboard">
+  <title>QUANTUM | Autonomous Trading Agent</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="app-shell" id="app">
+
+    <!-- Mobile Overlay -->
+    <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobileMenu()"></div>
+
+    <!-- ═══ Sidebar ═══ -->
+    <aside class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
+      <a href="#portfolio" class="sidebar-brand" aria-label="QUANTUM Dashboard Home">
+        <div class="sidebar-brand-icon" aria-hidden="true">Q</div>
+        <div>
+          <h1>QUANTUM</h1>
+          <small id="brandMode">PAPER</small>
+        </div>
+      </a>
+
+      <ul class="sidebar-nav" role="list">
+        <li class="sidebar-section-label">Trading</li>
+        <li>
+          <a href="#portfolio" class="active" data-view="portfolio" role="link">
+            <span class="nav-icon" aria-hidden="true">📊</span>
+            Portfolio
+          </a>
+        </li>
+        <li>
+          <a href="#ai-decisions" data-view="ai-decisions" role="link">
+            <span class="nav-icon" aria-hidden="true">🧠</span>
+            AI Decisions
+          </a>
+        </li>
+        <li>
+          <a href="#discovery" data-view="discovery" role="link">
+            <span class="nav-icon" aria-hidden="true">🔍</span>
+            Discovery
+          </a>
+        </li>
+
+        <li class="sidebar-section-label">System</li>
+        <li>
+          <a href="#metrics" data-view="metrics" role="link">
+            <span class="nav-icon" aria-hidden="true">⚡</span>
+            AI Metrics
+          </a>
+        </li>
+        <li>
+          <a href="#settings" data-view="settings" role="link">
+            <span class="nav-icon" aria-hidden="true">⚙️</span>
+            Settings
+          </a>
+        </li>
+      </ul>
+
+      <div class="sidebar-footer">
+        <div class="d-flex align-center gap-1 mb-1">
+          <span id="sidebarStatus" class="status-pill offline">
+            <span class="dot"></span>
+            <span>Loading…</span>
+          </span>
+        </div>
+        <div class="theme-toggle" role="radiogroup" aria-label="Theme selection">
+          <button onclick="setTheme('system')" id="themeSystem" class="active" aria-label="System theme">🖥</button>
+          <button onclick="setTheme('light')" id="themeLight" aria-label="Light theme">☀️</button>
+          <button onclick="setTheme('dark')" id="themeDark" aria-label="Dark theme">🌙</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ═══ Main ═══ -->
+    <div class="main-wrapper">
+
+      <!-- Header -->
+      <header class="page-header" role="banner">
+        <div class="d-flex align-center gap-1">
+          <button class="btn btn-icon mobile-menu-btn" onclick="openMobileMenu()" aria-label="Open menu">☰</button>
+          <h2 id="pageTitle">Portfolio</h2>
+        </div>
+        <div class="header-actions">
+          <div class="toggle-wrap">
+            <label class="toggle-label" for="killSwitch">Agent</label>
+            <input type="checkbox" class="toggle" id="killSwitch" checked
+                   onchange="toggleKillSwitch(this.checked)" aria-label="Toggle trading agent">
+          </div>
+          <button class="btn btn-ghost btn-icon" onclick="refreshAll()" aria-label="Refresh data">🔄</button>
+        </div>
+      </header>
+
+      <!-- Content Area -->
+      <main class="main-content" id="mainContent" role="main" aria-live="polite">
+        <!-- Views rendered here by JS -->
+      </main>
+
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toasts" aria-live="assertive"></div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

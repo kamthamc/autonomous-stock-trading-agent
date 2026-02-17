@@ -106,12 +106,17 @@ The system uses a **dual-database** architecture stored in `__databases__/`:
 
 **Why monthly rotation?** Activity data (especially API call logs) grows rapidly. Monthly rotation keeps each DB file manageable while preserving historical data.
 
-### 5. Dashboard — `dashboard.py`
+### 5. Dashboard — `dashboard_api.py` + SPA
 
-Streamlit-based real-time UI that reads from both databases:
-- Auto-refresh with configurable interval (default: 60s)
-- Symbol filtering across all sections
-- Market status indicators in sidebar
+FastAPI-based backend serving a responsive Single Page Application (SPA):
+- **Backend**: `dashboard_api.py` (FastAPI) provides REST endpoints for data.
+- **Frontend**: `dashboard/` (Vanilla JS, CSS3, HTML5) handles UI rendering.
+- **Features**:
+  - Real-time polling via `fetch()` API
+  - Canvas-based charting for performance
+  - Automatic Dark/Light mode switching
+  - Detailed AI Decision inspector
+
 
 ---
 

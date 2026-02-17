@@ -11,6 +11,8 @@ cp .env.example .env
 
 ## Environment Variables
 
+> For a visual overview of how these components interact, see the **[Architecture Diagram](./architecture.md)**.
+
 ### AI Provider
 
 | Variable | Description | Required |

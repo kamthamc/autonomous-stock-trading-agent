@@ -27,8 +27,9 @@ pyotp>=2.9,<3
 robin_stocks>=3.0,<4
 
 # Dashboard
-plotly>=5.0,<6
-streamlit>=1.30,<2
+fastapi>=0.129.0,<1
+uvicorn>=0.41.0,<1
+aiofiles>=25.1,<1
 
 # Observability
 opentelemetry-api>=1.20,<2
@@ -38,3 +39,4 @@ opentelemetry-sdk>=1.20,<2
 
 # Scheduler
 schedule>=1.2,<2
+

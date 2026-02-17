@@ -33,6 +33,9 @@ class Trade(SQLModel, table=True):
     region: str = "US"
     strategy: str = "AI_Momentum"
     pnl: Optional[float] = 0.0
+    estimated_fees: Optional[float] = 0.0    # Broker + exchange fees
+    net_pnl: Optional[float] = 0.0           # pnl minus fees
+    fee_currency: str = "USD"                # USD or INR
 
 class MarketTrend(SQLModel, table=True):
     __tablename__ = "market_trends"
@@ -109,4 +112,55 @@ class AppConfig(SQLModel, table=True):
     value: str
     description: Optional[str] = None
     updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class AIDecisionLog(SQLModel, table=True):
+    """
+    Captures every AI analysis decision with full context.
+    Makes it easy to trace WHY the AI made a specific call.
+    """
+    __tablename__ = "ai_decision_logs"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.now)
+    symbol: str
+    region: str = "US"
+
+    # What the AI decided
+    decision: str            # BUY_STOCK, BUY_AGGRESSIVE, SELL, PARTIAL_SELL, HOLD, etc.
+    confidence: float
+    reasoning: str           # Full AI reasoning text
+
+    # Context that was fed to the AI
+    current_price: Optional[float] = None
+    technical_summary: Optional[str] = None   # JSON: RSI, MACD, Bollinger, etc.
+    news_headlines: Optional[str] = None      # JSON: list of headlines used
+    macro_factors: Optional[str] = None       # JSON: geopolitics, earnings, sector moves
+    cross_impact: Optional[str] = None        # JSON: peer moves, correlations
+
+    # Stop/target suggestions
+    stop_loss_suggestion: Optional[float] = None
+    take_profit_suggestion: Optional[float] = None
+    min_upside_target_pct: Optional[float] = None
+
+    # What happened after
+    was_executed: bool = False
+    was_cache_hit: bool = False              # True if AI response came from cache
+    risk_review_result: Optional[str] = None  # APPROVE / REJECT
+    execution_price: Optional[float] = None
+
+
+class NewsFingerprint(SQLModel, table=True):
+    """
+    Tracks news headlines already processed to avoid re-acting on stale news.
+    The fingerprint is a hash of (symbol + headline_text).
+    """
+    __tablename__ = "news_fingerprints"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fingerprint: str = Field(index=True)   # SHA-256 of symbol+headline
+    symbol: str
+    headline: str
+    source: Optional[str] = None
+    first_seen: datetime = Field(default_factory=datetime.now)
+    acted_on: bool = False         # True if a trade was triggered by this news
+
 

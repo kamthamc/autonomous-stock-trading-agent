@@ -34,6 +34,9 @@
 | `region` | `string` |  | US |
 | `strategy` | `string` |  | AI_Momentum |
 | `pnl` | `number?` |  | 0.0 |
+| `estimated_fees` | `number?` |  | 0.0 |
+| `net_pnl` | `number?` |  | 0.0 |
+| `fee_currency` | `string` |  | USD |
 
 
 ### RiskReview (Devil's Advocate)
@@ -152,17 +155,21 @@ Cross-impact context for a target stock, built from its correlated peers.
 | `rh_password` | `string?` |  | None |
 | `rh_mfa_code` | `string?` |  | None |
 | `kite_api_key` | `string?` |  | None |
+| `kite_api_secret` | `string?` |  | None |
 | `kite_access_token` | `string?` |  | None |
+| `kite_request_token` | `string?` |  | None |
 | `icici_api_key` | `string?` |  | None |
 | `icici_secret_key` | `string?` |  | None |
 | `icici_session_token` | `string?` |  | None |
 | `us_preferred_broker` | `string` |  | robinhood |
 | `india_preferred_broker` | `string` |  | zerodha |
 | `india_fallback_broker` | `string?` |  | icici |
-| `us_max_capital` | `number` |  | 500.0 |
+| `us_max_capital` | `number` |  | 1000.0 |
 | `us_max_per_trade` | `number?` |  | None |
-| `india_max_capital` | `number` |  | 500.0 |
+| `us_min_trade_value` | `number` |  | 50.0 |
+| `india_max_capital` | `number` |  | 100000.0 |
 | `india_max_per_trade` | `number?` |  | None |
+| `india_min_trade_value` | `number` |  | 500.0 |
 | `ai_provider` | `string` |  | azure_openai |
 | `openai_api_key` | `string?` |  | None |
 | `AZURE_OPENAI_ENDPOINT` | `string?` |  | None |
@@ -173,9 +180,20 @@ Cross-impact context for a target stock, built from its correlated peers.
 | `db_dir` | `string` |  | __databases__ |
 | `trading_db_name` | `string` |  | trading_agent.db |
 | `activity_db_prefix` | `string` |  | activity_ |
+| `log_dir` | `string` |  | __logs__ |
+| `log_file_name` | `string` |  | agent.jsonl |
+| `ai_trade_review_file_name` | `string` |  | ai_trade_review.jsonl |
 | `trading_mode` | `string` |  | paper |
+| `trading_style` | `string` |  | intraday |
 | `max_capital` | `number` |  | 1000.0 |
 | `max_risk_per_trade` | `number` |  | 0.02 |
+| `trailing_stop_pct` | `number?` |  | None |
+| `min_upside_target_pct` | `number?` |  | None |
+| `partial_sell_pct` | `number?` |  | None |
+| `max_scale_outs` | `integer?` |  | None |
+| `us_fee_per_trade` | `number` |  | 0.5 |
+| `india_fee_pct` | `number` |  | 0.001 |
+| `india_min_fee` | `number` |  | 20.0 |
 | `us_watchlist` | `string` |  | AAPL,TSLA,SPY,QQQ,MSFT |
 | `india_watchlist` | `string` |  | RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS,TATASTEEL.NS |
 | `watchlist` | `array` |  | [{'ticker': 'AAPL', 'enabled': True, 'asset_type': 'stock'}, {'ticker': 'TSLA', 'enabled': True, 'asset_type': 'stock'}, {'ticker': 'SPY', 'enabled': True, 'asset_type': 'stock'}] |

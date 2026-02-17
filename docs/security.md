@@ -36,7 +36,7 @@ The agent strictly adheres to market hours using the `exchange_calendars` librar
 
 ### 💉 SQL Injection Prevention
 - **ORM usage**: The core application uses **SQLModel/SQLAlchemy**, which inherently sanitizes all inputs before database execution.
-- **Parameterized Queries**: The Dashboard (`dashboard.py`) uses parameterized SQL queries (e.g., `WHERE timestamp >= ?`) for all filtering and data retrieval. **No** user input is ever concatenated directly into SQL strings.
+- **Parameterized Queries**: The Dashboard (`dashboard_api.py`) uses parameterized SQL queries (e.g., `WHERE timestamp >= ?`) for all filtering and data retrieval. **No** user input is ever concatenated directly into SQL strings.
 
 ### 📁 Data Isolation
 - **Databases**: Stored in `__databases__/`, isolated from the source code.
