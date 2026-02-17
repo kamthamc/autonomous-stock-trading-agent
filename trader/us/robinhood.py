@@ -35,6 +35,10 @@ class RobinhoodTrader(USBroker):
         if self.is_paper:
             logger.info("rh_paper_trading_auth_simulated")
             return True
+
+        if not settings.rh_username or not settings.rh_password:
+             logger.warning("rh_credentials_missing_skipping_login")
+             return False
         
         try:
             loop = asyncio.get_running_loop()

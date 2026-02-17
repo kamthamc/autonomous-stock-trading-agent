@@ -174,8 +174,53 @@ class AIAnalyzer:
         Strong moves or earnings from competitors/suppliers/customers can signal sector-wide trends.
         """
         
+        
+        # Select Strategy Persona based on Config
+        style = settings.trading_style
+        if style == "intraday":
+            strategy_persona = "INTRADAY SCALPER"
+            goal_instruction = """
+            Goal: Maximize INTRADAY profit. Focus on immediate price action (1-min to 15-min charts).
+            
+            STRATEGY CRITERIA:
+            1. **Trend & Momentum**:
+               - **VWAP**: bullish if Price > VWAP; bearish if Price < VWAP.
+               - **RSI (14)**: Look for reversals at extremes (>70 sell, <30 buy) OR momentum breakouts (crossing 50).
+            
+            2. **Valid Setups**:
+               - **Breakout**: Price clears resistance with Volume > 1.2x average.
+               - **Pullback**: Retest of broken resistance or moving average (EMA 9/20) holding support.
+               - **Mean Reversion**: Extreme extension from EMA + Reversal Candle (Hammer/Shooting Star).
+               
+            3. **Risk Management**:
+               - Stop Loss must be TIGHT (0.5% - 1.5%).
+               - Take Profit at next technical level (Pivot/High of Day).
+               - If choppy/sideways, signal HOLD.
+            """
+        elif style == "long_term":
+            strategy_persona = "VALUE INVESTOR"
+            goal_instruction = """
+            Goal: Long-term capital appreciation. Focus on fundamentals and macro trends.
+            
+            STRATEGY CRITERIA:
+            1. **Business Quality**: Consistent earnings growth, wide moat.
+            2. **Valuation**: Is P/E reasonable? RSI oversold on Weekly?
+            3. **Execution**: Buy dips to 200-day SMA in strong uptrends.
+            """
+        else: # Default or short_term
+            strategy_persona = "SWING TRADER"
+            goal_instruction = """
+            Goal: Capture SWING moves (2-10 days). Focus on Daily/4H structure.
+            
+            STRATEGY CRITERIA:
+            1. **Market Structure**: Look for Higher Highs/Higher Lows (Uptrend).
+            2. **Key Levels**: Buy at Support/Trendline retest. Sell at Resistance.
+            3. **Oscillators**: MACD Crossover or RSI divergence.
+            4. **Stop Loss**: Moderate (2% - 5%).
+            """
+
         prompt = f"""
-        You are an expert autonomous stock trader. Analyze the following data for {symbol} and provide a trading decision.
+        You are an expert {strategy_persona}. Analyze the following data for {symbol} and provide a trading decision.
         
         Current Price: {price}
         
@@ -188,8 +233,16 @@ class AIAnalyzer:
         Options Chain Analysis:
         {options_table}
         {earnings_section}{cross_impact_section}
-        Goal: Optimal Profit with Managed Risk. Prefer high probability setups. 
+        
+        {goal_instruction}
+
+        Prioritize recent price action, RSI extremes, and immediate catalysts.
         If recommending BUY_CALL or BUY_PUT, YOU MUST SELECT the best specific contract from the Options Chain table above and populate 'recommended_option'.
+        
+        CRITICAL: Be DECISIVE.
+        - If the setup is good, Confidence MUST be > 0.7.
+        - If the setup is weak or ambiguous, Confidence MUST be < 0.5.
+        - Avoid the "mushy middle" (0.5 - 0.65). If you are unsure, HOLD.
         
         Output JSON format ONLY:
         {{
@@ -241,7 +294,7 @@ class AIAnalyzer:
                 response = await self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are a professional algorithmic trader. Respond only in valid JSON."},
+                        {"role": "system", "content": f"You are a professional {strategy_persona}. Respond only in valid JSON."},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"}
@@ -323,21 +376,25 @@ class AIAnalyzer:
         Critique the trade. You are a "Devil's Advocate".
         
         GUIDELINES:
-        1. **Allow Non-Stock Assets**: ETFs, ETCs (Gold/Silver), and Commodities are VALID instruments. Do NOT reject them just because they are not "operating companies".
-        2. **Value Macro Context**: War, Geopolitics, and Bond Yields are valid reasons to buy Gold/Bonds. If the reasoning cites these, CREDIT it.
-        3. **Confidence-Based Skepticism**:
-           - If Confidence is MODERATE TO HIGH (> 0.65), reject ONLY if you see a FATAL flaw.
-           - If Confidence is LOW (< 0.65), be skeptical.
-        4. **Strategy Awareness**: 
-           - Mean Reversion is VALID. Do NOT reject "Counter-Trend" trades if the thesis is explicitly "Mean Reversion" (e.g. RSI oversold).
-           - Liquidity: For Major Caps (AAPL, MSFT, SPY, etc.), "below average volume" is NOT a risk. Only reject penny stocks for volume.
+        1. **Allow Non-Stock Assets**: ETFs, Commodities are VALID.
+        2. **Value Macro Context**: War/Bonds/Rates are valid reasons.
+        3. **Confidence Filter**:
+           - **0.60 Threshold**: For Intraday/Swing strategies.
+           - If Confidence > 0.60: Reject ONLY if there is a **FATAL Technical Flaw** (e.g. Buying directly into major resistance, ignoring bearish divergence).
+           - Do NOT reject for generic reasons like "market uncertainty".
+        4. **Liquidity**: Do NOT reject Major Caps (Tata, Reliance, Apple, etc) for "low volume" unless it's < 10% of average.
+        
+        RISK CHECKLIST (Critique these points):
+        - **Trend Alignment**: Is the trade fighting a strong higher-timeframe trend without a reversal signal?
+        - **R:R Ratio**: Is the Stop Loss too wide (>2% for scalp)?
+        - **Overhead Supply**: Are we buying at the top of a range?
         
         Look for:
         - Buying into resistance / Selling into support
-        - RSI extremes (Buying > 70, Selling < 30) - UNLESS Mean Reversion
-        - Fatal flaws only (for > 0.65 confidence)
+        - RSI extremes (Buying > 75, Selling < 25) - UNLESS Mean Reversion
         - Counter-trend trades without confirmation
-        - LOW LIQUIDITY RISK (Is volume sufficient to exit?)
+        
+        NOTE: This is a SHORT-TERM strategy. Do not reject trades solely because "long term trend is bearish" if short-term momentum is bullish.
         
         Output JSON ONLY:
         {{

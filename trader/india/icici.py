@@ -2,7 +2,7 @@ import structlog
 from decimal import Decimal
 from typing import Dict, Any, Optional
 from datetime import datetime
-from breeze_connect import BreezeConnect
+# from breeze_connect import BreezeConnect # Lazy load
 from agent_config import settings
 from .base import IndiaBroker
 from ..base import Order, Position
@@ -17,7 +17,13 @@ class ICICITrader(IndiaBroker):
     """
 
     def __init__(self):
-        self.breeze = BreezeConnect(api_key=settings.icici_api_key)
+        self.breeze = None
+        if settings.icici_api_key:
+            try:
+                from breeze_connect import BreezeConnect
+                self.breeze = BreezeConnect(api_key=settings.icici_api_key)
+            except Exception as e:
+                logger.error("icici_init_failed", error=str(e))
         self.is_authenticated = False
         self.session_token = settings.icici_session_token
         self.secret_key = settings.icici_secret_key

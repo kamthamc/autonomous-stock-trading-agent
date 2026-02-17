@@ -8,7 +8,7 @@ from .technical import TechAnalyzer
 from .ai import AIAnalyzer, AISignal
 from .news import NewsFetcher, NewsItem
 from .risk import RiskManager, TradeRequest
-from .market_hours import is_market_open
+from .market_hours import is_market_open, is_in_analysis_window
 from .earnings import get_earnings_info
 from .correlations import get_cross_impact
 from trader.market_data import MarketDataFetcher
@@ -101,13 +101,17 @@ class StrategyEngine:
             logger.warning("circuit_breaker_active_skipping", symbol=symbol, region=region)
             return None
 
-        # 0a. Check Available Funds
-        if not await risk_manager.has_sufficient_funds(100.0):
-            logger.warning("insufficient_funds_pausing_analysis", symbol=symbol, region=region)
+        # 0a. Check Available Funds (Skip ONLY if we don't hold the stock)
+        # We must analyze holdings to generate SELL signals even if cash is low.
+        current_position = risk_manager.get_position(symbol)
+        is_held = current_position is not None and current_position.quantity > 0
+        
+        if not is_held and not await risk_manager.has_sufficient_funds(settings.india_min_trade_value if region == "IN" else settings.us_min_trade_value):
+            logger.warning("insufficient_funds_skipping_new_buy", symbol=symbol, region=region)
             return None
 
-        # 0b. Market Hours Check (Skip if Live and Closed)
-        if settings.trading_mode == "live" and not is_market_open(symbol):
+        # 0b. Market Hours Check (Allow analysis in pre-market window)
+        if settings.trading_mode == "live" and not is_in_analysis_window(symbol):
             logger.info("market_closed", symbol=symbol, region=region)
             return None
         
@@ -127,6 +131,28 @@ class StrategyEngine:
         if not price_snapshot or history.empty:
             logger.warning("insufficient_data", symbol=symbol)
             return None
+
+        # 1b. Check Stop Loss on Existing Position
+        if is_held:
+            avg_price = float(current_position.average_price)
+            current_price = price_snapshot.price
+            pnl_pct = (current_price - avg_price) / avg_price
+            
+            # Get configured max risk (default 2%)
+            max_risk = float(risk_manager.max_risk_per_trade) # e.g. 0.02
+            
+            if pnl_pct < -max_risk:
+                logger.warning("stop_loss_triggered", symbol=symbol, 
+                               pnl_pct=f"{pnl_pct*100:.2f}%", threshold=f"-{max_risk*100}%")
+                return TradeSignal(
+                    symbol=symbol,
+                    action="SELL",
+                    asset_type="STOCK",
+                    quantity=current_position.quantity,
+                    price=current_price,
+                    reason=f"Stop Loss Triggered: PnL {pnl_pct*100:.2f}% exceeds max risk {max_risk*100}%",
+                    confidence=1.0
+                )
 
         # 2. Technical Analysis
         tech_indicators = self.tech_analyzer.analyze(history)
@@ -197,6 +223,8 @@ class StrategyEngine:
             was_overridden = False
             if not review_result.is_approved and settings.trading_mode != "live":
                 was_overridden = True
+            
+
             
             # Save review to activity DB
             await save_risk_review(RiskReview(
@@ -298,3 +326,44 @@ class StrategyEngine:
         tasks = [self.analyze_symbol(sym, macro_news) for sym in unique_symbols]
         results = await asyncio.gather(*tasks)
         return [r for r in results if r is not None and r.action != "HOLD"]
+
+    async def check_risks(self, risk_managers: Dict[str, RiskManager]) -> List[TradeSignal]:
+        """Fast check for stop-loss or take-profit triggers on existing positions."""
+        signals = []
+        
+        # Collect all held symbols
+        symbols_to_check = []
+        for rm in risk_managers.values():
+            for symbol, pos in rm.positions.items():
+                if pos.quantity > 0:
+                    symbols_to_check.append((symbol, pos, rm))
+        
+        if not symbols_to_check:
+            return []
+
+        # Batch fetch prices
+        tasks = [self.market_data.get_current_price(sym) for sym, _, _ in symbols_to_check]
+        prices = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for (symbol, pos, rm), price_data in zip(symbols_to_check, prices):
+            if isinstance(price_data, Exception) or not price_data:
+                continue
+                
+            current_price = float(price_data.price)
+            avg_price = float(pos.average_price)
+            if avg_price <= 0: continue
+            
+            pnl_pct = (current_price - avg_price) / avg_price
+            max_risk = float(rm.max_risk_per_trade)
+            
+            # STOP LOSS
+            if pnl_pct < -max_risk:
+                 logger.warning("fast_stop_loss_triggered", symbol=symbol, pnl=f"{pnl_pct*100:.2f}%")
+                 signals.append(TradeSignal(
+                     symbol=symbol, action="SELL", asset_type="STOCK",
+                     quantity=pos.quantity, price=current_price,
+                     reason=f"Stop Loss (Fast Check): PnL {pnl_pct*100:.1f}% < -{max_risk*100}%",
+                     confidence=1.0
+                 ))
+        
+        return signals

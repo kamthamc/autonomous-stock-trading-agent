@@ -192,6 +192,67 @@ async def load_dynamic_config(risk_managers=None):
         logger.error("failed_to_load_dynamic_config", error=str(e))
 
 
+async def execute_signals(signals, router, risk_managers):
+    for signal in signals:
+        logger.info("trade_signal_received", signal=signal.model_dump())
+        
+        # Route to the correct broker for this symbol's region
+        region = BrokerRouter.detect_region(signal.symbol)
+        broker = router.get_broker_for_symbol(signal.symbol)
+        
+        if not broker:
+            logger.warning("no_broker_for_region", symbol=signal.symbol, region=region)
+            continue
+        
+        # Check market hours for the relevant region
+        if settings.trading_mode == "live":
+            # We are in analysis window, but market might not affectively be OPEN yet.
+            # Wait loop up to 5 minutes to catch the open.
+            scan_start = datetime.now()
+            while not router.is_market_open_for_symbol(signal.symbol):
+                elapsed = (datetime.now() - scan_start).total_seconds()
+                if elapsed > 300: # Wait max 5 mins
+                    break
+                logger.info("waiting_market_open", symbol=signal.symbol, elapsed=int(elapsed))
+                await asyncio.sleep(10)
+            
+            if not router.is_market_open_for_symbol(signal.symbol):
+                logger.warning("market_not_open_skipping_order", symbol=signal.symbol)
+                continue
+        
+        # Execute Trade
+        try:
+            order = await broker.place_order(
+                symbol=signal.symbol,
+                quantity=signal.quantity,
+                side=signal.action.lower(),
+            )
+            logger.info("order_placed", 
+                        order_id=order.order_id, status=order.status,
+                        region=region)
+            
+            # Record trade in the region's risk manager
+            if order.status not in ("failed", "FAILED", "ERROR", "REJECTED"):
+                rm = risk_managers.get(region, risk_managers["US"])
+                rm.record_trade(
+                    symbol=signal.symbol,
+                    action=signal.action,
+                    quantity=signal.quantity,
+                    price=signal.price
+                )
+            
+            # Persist to DB
+            await save_trade(Trade(
+                symbol=signal.symbol,
+                action=signal.action,
+                quantity=signal.quantity,
+                price=signal.price,
+                status=order.status,
+                order_id=order.order_id
+            ))
+        except Exception as e:
+            logger.error("trade_execution_failed", symbol=signal.symbol, error=str(e))
+
 async def trading_loop():
     logger.info("agent_starting", mode=settings.trading_mode)
     
@@ -211,11 +272,13 @@ async def trading_loop():
             region="US",
             max_capital=settings.us_max_capital,
             max_per_trade=settings.us_max_per_trade,
+            min_trade_value=settings.us_min_trade_value,
         ),
         "IN": RiskManager(
             region="IN",
             max_capital=settings.india_max_capital,
             max_per_trade=settings.india_max_per_trade,
+            min_trade_value=settings.india_min_trade_value,
         ),
     }
 
@@ -238,6 +301,7 @@ async def trading_loop():
 
     # Main Loop
     last_scan_time = datetime.min
+    last_full_analysis_time = datetime.min
     is_paper = settings.trading_mode != "live"
     
     from strategy.market_hours import filter_tickers_by_market_hours, get_market_status
@@ -258,15 +322,41 @@ async def trading_loop():
             
             current_time = datetime.now()
             
-            # Log market status each cycle
+            # Log market status
             market_status = get_market_status()
-            logger.info("cycle_started", time=str(current_time),
-                        us_market=market_status["us"],
-                        india_market=market_status["india"])
             
-            tickers = list(settings.all_tickers)  # Copy so we can extend with trending
+            # --- Sync with Brokers (Always Sync) ---
+            # Sync US
+            us_broker = router.get_broker_for_symbol("AAPL") 
+            if us_broker and "US" in risk_managers:
+                 try:
+                     pos = await us_broker.get_positions()
+                     bal = await us_broker.get_account_balance()
+                     risk_managers["US"].sync_from_broker(pos, bal)
+                 except Exception as e:
+                     logger.error("us_broker_sync_failed", error=str(e))
+                 
+            # Sync India
+            in_broker = router.get_broker_for_symbol("RELIANCE.NS")
+            if in_broker and "IN" in risk_managers:
+                 try:
+                     pos = await in_broker.get_positions()
+                     bal = await in_broker.get_account_balance()
+                     risk_managers["IN"].sync_from_broker(pos, bal)
+                 except Exception as e:
+                     logger.error("india_broker_sync_failed", error=str(e))
             
-            # Market scan every 30 minutes
+            # 1. Fast Stop-Loss Check (Every 10s)
+            try:
+                sl_signals = await engine.check_risks(risk_managers)
+                if sl_signals:
+                    logger.info("executing_stop_loss_signals", count=len(sl_signals))
+                    await execute_signals(sl_signals, router, risk_managers)
+            except Exception as e:
+                logger.error("fast_risk_check_failed", error=str(e))
+
+            # 2. Daily Market Scan (Every 30m)
+            tickers = list(settings.all_tickers)
             if (current_time - last_scan_time).total_seconds() > 1800:
                 trending_tickers = await scanner.scan_market()
                 if trending_tickers:
@@ -276,74 +366,32 @@ async def trading_loop():
                             tickers.append(t)
                 last_scan_time = current_time
 
-            # Filter tickers by regional market hours
-            active_tickers, skipped_tickers = filter_tickers_by_market_hours(tickers, paper_mode=is_paper)
+            # 3. Full Analysis (Every 60s)
+            if (current_time - last_full_analysis_time).total_seconds() > 60:
+                logger.info("starting_full_analysis_cycle")
+                
+                # Filter tickers by regional market hours
+                active_tickers, skipped_tickers = filter_tickers_by_market_hours(tickers, paper_mode=is_paper)
+                
+                if skipped_tickers:
+                    logger.info("tickers_skipped_market_closed", skipped=skipped_tickers)
+                
+                if not active_tickers:
+                    logger.info("no_active_markets_skipping_analysis")
+                else:
+                    signals = await engine.run_cycle(active_tickers)
+                    await execute_signals(signals, router, risk_managers)
+                    
+                    # Log end-of-cycle status per region
+                    for rgn, rm in risk_managers.items():
+                        logger.info("cycle_region_status", 
+                                    region=rgn,
+                                    capital_remaining=str(rm.current_capital),
+                                    open_positions=len(rm.positions))
+                                    
+                last_full_analysis_time = current_time
             
-            if skipped_tickers:
-                logger.info("tickers_skipped_market_closed", skipped=skipped_tickers)
-            
-            if not active_tickers:
-                logger.info("no_active_markets", sleeping="60s")
-                await asyncio.sleep(60)
-                continue
-
-            # Analyze only tickers whose markets are active
-            signals = await engine.run_cycle(active_tickers)
-            
-            for signal in signals:
-                logger.info("trade_signal_received", signal=signal.model_dump())
-                
-                # Route to the correct broker for this symbol's region
-                region = BrokerRouter.detect_region(signal.symbol)
-                broker = router.get_broker_for_symbol(signal.symbol)
-                
-                if not broker:
-                    logger.warning("no_broker_for_region", symbol=signal.symbol, region=region)
-                    continue
-                
-                # Check market hours for the relevant region
-                if settings.trading_mode == "live" and not router.is_market_open_for_symbol(signal.symbol):
-                    logger.info("market_closed_skipping_order", symbol=signal.symbol, region=region)
-                    continue
-                
-                # Execute Trade — broker handles symbol conversion internally
-                order = await broker.place_order(
-                    symbol=signal.symbol,
-                    quantity=signal.quantity,
-                    side=signal.action.lower(),
-                )
-                logger.info("order_placed", 
-                            order_id=order.order_id, status=order.status,
-                            region=region)
-                
-                # Record trade in the region's risk manager
-                if order.status not in ("failed", "FAILED", "ERROR", "REJECTED"):
-                    rm = risk_managers.get(region, risk_managers["US"])
-                    rm.record_trade(
-                        symbol=signal.symbol,
-                        action=signal.action,
-                        quantity=signal.quantity,
-                        price=signal.price
-                    )
-                
-                # Persist to DB
-                await save_trade(Trade(
-                    symbol=signal.symbol,
-                    action=signal.action,
-                    quantity=signal.quantity,
-                    price=signal.price,
-                    status=order.status,
-                    order_id=order.order_id
-                ))
-            
-            # Log end-of-cycle status per region
-            for rgn, rm in risk_managers.items():
-                logger.info("cycle_region_status", 
-                            region=rgn,
-                            capital_remaining=str(rm.current_capital),
-                            open_positions=len(rm.positions))
-            
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
 
         except KeyboardInterrupt:
             logger.info("agent_stopping_user_request")

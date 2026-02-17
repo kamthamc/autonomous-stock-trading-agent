@@ -20,7 +20,9 @@ class AgentSettings(BaseSettings):
     # India Broker — Zerodha / Kite Connect
     # ──────────────────────────────────────────────
     kite_api_key: Optional[str] = None
+    kite_api_secret: Optional[str] = None
     kite_access_token: Optional[str] = None
+    kite_request_token: Optional[str] = None
 
     # ──────────────────────────────────────────────
     # India Broker — ICICI Direct / Breeze
@@ -38,12 +40,14 @@ class AgentSettings(BaseSettings):
     
     # ──────────────────────────────────────────────
     # Per-Region Capital Limits
-    # ──────────────────────────────────────────────
-    us_max_capital: float = 500.00
+    # ──────────────────────────────────────────────    # Risk Management Defaults
+    us_max_capital: float = 1000.0
     us_max_per_trade: Optional[float] = None
+    us_min_trade_value: float = 50.0  # Min $50 per trade
     
-    india_max_capital: float = 500.00
+    india_max_capital: float = 100000.0
     india_max_per_trade: Optional[float] = None
+    india_min_trade_value: float = 500.0 # Min ₹500 per trade
 
     # ──────────────────────────────────────────────
     # AI Provider
@@ -91,6 +95,7 @@ class AgentSettings(BaseSettings):
     # Trading Limits (global)
     # ──────────────────────────────────────────────
     trading_mode: Literal["paper", "live"] = "paper"
+    trading_style: Literal["intraday", "short_term", "long_term"] = "intraday"
     max_capital: float = 1000.00
     max_risk_per_trade: float = 0.02
 

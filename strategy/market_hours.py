@@ -25,7 +25,7 @@ US_EASTERN = pytz.timezone('US/Eastern')
 INDIA_IST = pytz.timezone('Asia/Kolkata')
 
 # Pre-market window (analyze stocks this many minutes before open)
-PRE_MARKET_MINUTES = 30
+PRE_MARKET_MINUTES = 60
 
 # Calendar instances (loaded once, cached)
 _calendars = {}

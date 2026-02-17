@@ -28,8 +28,21 @@ class ZerodhaTrader(IndiaBroker):
         
         if not self.is_paper:
             self.kite = KiteConnect(api_key=settings.kite_api_key)
-            if settings.kite_access_token:
-                self.kite.set_access_token(settings.kite_access_token)
+            
+            try:
+                if settings.kite_access_token:
+                    logger.info("kite_using_existing_access_token")
+                    self.kite.set_access_token(settings.kite_access_token)
+                    
+                elif settings.kite_request_token and settings.kite_api_secret:
+                    logger.info("kite_generating_session")
+                    data = self.kite.generate_session(settings.kite_request_token, api_secret=settings.kite_api_secret)
+                    self.kite.set_access_token(data["access_token"])
+                    logger.info("kite_session_active")
+                else:
+                    logger.warning("kite_missing_credentials_for_login")
+            except Exception as e:
+                logger.error("kite_login_failed", error=str(e))
 
     def get_exchange_symbol(self, symbol: str) -> str:
         """
@@ -82,7 +95,99 @@ class ZerodhaTrader(IndiaBroker):
 
     async def get_positions(self) -> Dict[str, Position]:
         if self.is_paper: return {}
-        return {}
+        
+        try:
+            loop = asyncio.get_running_loop()
+            
+            # Fetch both Holdings (T+1) and Positions (Today/T+0)
+            holdings_future = loop.run_in_executor(self._executor, self.kite.holdings)
+            positions_future = loop.run_in_executor(self._executor, self.kite.positions)
+            
+            holdings, positions_resp = await asyncio.gather(holdings_future, positions_future)
+            
+            net_positions = positions_resp.get('net', [])
+            
+            combined_positions = {}
+            
+            # Process Holdings
+            for h in holdings:
+                symbol = h['tradingsymbol']
+                exchange = h['exchange']
+                if exchange == 'NSE' and not symbol.endswith('.NS'):
+                    symbol = f"{symbol}.NS"
+                elif exchange == 'BSE' and not symbol.endswith('.BO'):
+                    symbol = f"{symbol}.BO"
+                
+                qty = Decimal(str(h['quantity']))
+                if qty > 0:
+                    avg_price = Decimal(str(h['average_price']))
+                    curr_price = Decimal(str(h['last_price']))
+                    combined_positions[symbol] = Position(
+                        symbol=symbol,
+                        quantity=qty,
+                        average_price=avg_price,
+                        current_price=curr_price,
+                        market_value=qty * curr_price,
+                        unrealized_pnl=(curr_price - avg_price) * qty
+                    )
+
+            # Process Today's Positions (merge with holdings)
+            for p in net_positions:
+                symbol = p['tradingsymbol']
+                exchange = p['exchange']
+                if exchange == 'NSE' and not symbol.endswith('.NS'):
+                    symbol = f"{symbol}.NS"
+                elif exchange == 'BSE' and not symbol.endswith('.BO'):
+                    symbol = f"{symbol}.BO"
+                
+                qty = Decimal(str(p['quantity']))
+                # If quantity is not 0 (open position)
+                if qty != 0:
+                    current_qty = qty
+                    existing = combined_positions.get(symbol)
+                    
+                    avg_price = Decimal(str(p['average_price']))
+                    curr_price = Decimal(str(p['last_price']))
+
+                    if existing:
+                        # Additive logic: Holdings (T+1) + Net Position (Today's change)
+                        # e.g., Hold 10, Sell 2 -> 10 + (-2) = 8.
+                        # e.g., Hold 10, Buy 5 -> 10 + 5 = 15.
+                        
+                        new_qty = existing.quantity + qty
+                        
+                        if new_qty != 0:
+                            # Calculate weighted average price
+                            total_cost = (existing.quantity * existing.average_price) + (qty * avg_price)
+                            new_avg = total_cost / new_qty
+                            
+                            combined_positions[symbol] = Position(
+                                symbol=symbol,
+                                quantity=new_qty,
+                                average_price=new_avg,
+                                current_price=curr_price,
+                                market_value=new_qty * curr_price,
+                                unrealized_pnl=(curr_price - new_avg) * new_qty
+                            )
+                        else:
+                            # Position closed out completely
+                            del combined_positions[symbol]
+                    else:
+                        combined_positions[symbol] = Position(
+                            symbol=symbol,
+                            quantity=qty,
+                            average_price=avg_price,
+                            current_price=curr_price,
+                            market_value=qty * curr_price,
+                            unrealized_pnl=(curr_price - avg_price) * qty
+                        )
+
+            # Filter out zero/negative positions (closed out)
+            return {k: v for k, v in combined_positions.items() if v.quantity > 0}
+            
+        except Exception as e:
+            logger.error("kite_get_positions_failed", error=str(e))
+            return {}
 
     async def get_account_balance(self) -> Decimal:
         if self.is_paper: return Decimal(str(settings.india_max_capital))

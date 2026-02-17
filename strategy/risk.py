@@ -35,12 +35,14 @@ class RiskManager:
                  region: str = "US",
                  max_capital: float = settings.max_capital,
                  max_per_trade: Optional[float] = None,
+                 min_trade_value: float = 0.0,
                  max_risk_per_trade: float = settings.max_risk_per_trade):
         
         self.region = region
         self.current_capital = Decimal(str(max_capital))
         self.initial_capital = Decimal(str(max_capital))
         self.max_risk_per_trade = Decimal(str(max_risk_per_trade))
+        self.min_trade_value = Decimal(str(min_trade_value))
         
         # Per-trade allocation limit
         if max_per_trade is not None:
@@ -61,7 +63,8 @@ class RiskManager:
         logger.info("risk_manager_initialized", 
                      region=region,
                      capital=str(self.current_capital),
-                     max_per_trade=str(self.max_capital_per_trade))
+                     max_per_trade=str(self.max_capital_per_trade),
+                     min_trade_value=str(self.min_trade_value))
 
     def _reset_daily_counters_if_new_day(self):
         """Resets daily loss and trade counters at the start of a new trading day."""
@@ -117,10 +120,27 @@ class RiskManager:
                            cost=total_cost, capital=self.current_capital)
             return False
 
-        # 2. Check Per-Trade Allocation Limit
-        if total_cost > self.max_capital_per_trade:
+        # 1.5 Check Minimum Trade Value (Avoid charges inefficiency)
+        if total_cost < self.min_trade_value:
+             logger.warning("risk_reject_min_trade_value", region=self.region,
+                           cost=str(total_cost), min_required=str(self.min_trade_value))
+             return False
+
+        # 2. Check Total Allocation Limit (Existing + New)
+        existing_value = Decimal("0.0")
+        if request.symbol in self.positions:
+             pos = self.positions[request.symbol]
+             # Estimate current value of holding using the current trade price
+             existing_value = Decimal(str(pos.quantity)) * Decimal(str(request.price))
+
+        projected_exposure = existing_value + total_cost
+        
+        if projected_exposure > self.max_capital_per_trade:
              logger.warning("risk_reject_max_allocation", region=self.region,
-                           cost=total_cost, max_allowed=self.max_capital_per_trade)
+                           projected_exposure=str(projected_exposure), 
+                           max_allowed=str(self.max_capital_per_trade),
+                           existing_value=str(existing_value),
+                           new_cost=str(total_cost))
              return False
 
         # 3. Check Stop Loss Risk (if provided)
@@ -193,3 +213,25 @@ class RiskManager:
     async def has_sufficient_funds(self, amount: float) -> bool:
         """Checks if there is enough capital for an operation."""
         return self.current_capital >= Decimal(str(amount))
+
+    def sync_from_broker(self, positions: Dict[str, 'Position'], balance: Decimal):
+        """
+        Syncs the internal risk manager state with the broker's actual data.
+        
+        Args:
+            positions: Dictionary of active positions from the broker.
+            balance: Current available cash balance from the broker.
+        """
+        self.current_capital = balance
+        self.positions.clear()
+        
+        for symbol, pos in positions.items():
+            self.positions[symbol] = PositionRecord(
+                symbol=symbol,
+                quantity=int(pos.quantity),
+                average_price=float(pos.average_price)
+            )
+            
+        logger.info("risk_manager_synced", region=self.region, 
+                    balance=str(self.current_capital), 
+                    positions_count=len(self.positions))
