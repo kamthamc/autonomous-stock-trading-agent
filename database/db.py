@@ -17,7 +17,10 @@ from datetime import datetime
 import structlog
 
 from agent_config import settings
-from .models import Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog, AppConfig, AIDecisionLog, NewsFingerprint
+from .models import (
+    Trade, Signal, MarketTrend, RiskReview, AgentEvent, APICallLog,
+    AppConfig, AIDecisionLog, NewsFingerprint, AccountEquitySnapshot, WatchedTicker
+)
 
 logger = structlog.get_logger()
 
@@ -81,7 +84,7 @@ async def _ensure_activity_tables():
 # Initialization
 # ──────────────────────────────────────────────
 
-_TRADING_TABLES = {"signals", "trades", "market_trends", "app_config"}
+_TRADING_TABLES = {"signals", "trades", "market_trends", "app_config", "account_equity_snapshots", "watched_tickers"}
 
 
 async def init_db():
@@ -157,6 +160,46 @@ async def get_latest_market_trend() -> Optional[MarketTrend]:
         statement = select(MarketTrend).order_by(MarketTrend.timestamp.desc()).limit(1)
         results = await session.execute(statement)
         return results.scalars().first()
+
+async def save_account_equity_snapshot(snapshot: AccountEquitySnapshot) -> AccountEquitySnapshot:
+    async with trading_session() as session:
+        session.add(snapshot)
+        await session.commit()
+        await session.refresh(snapshot)
+        return snapshot
+
+async def get_equity_snapshots(limit: int = 100, region: Optional[str] = None) -> List[AccountEquitySnapshot]:
+    async with trading_session() as session:
+        statement = select(AccountEquitySnapshot).order_by(AccountEquitySnapshot.timestamp.desc())
+        if region:
+            statement = statement.where(AccountEquitySnapshot.region == region)
+        statement = statement.limit(limit)
+        results = await session.execute(statement)
+        return results.scalars().all()
+
+async def save_watched_ticker(ticker: WatchedTicker) -> WatchedTicker:
+    async with trading_session() as session:
+        session.add(ticker)
+        await session.commit()
+        await session.refresh(ticker)
+        return ticker
+
+async def get_watched_tickers(region: Optional[str] = None) -> List[WatchedTicker]:
+    async with trading_session() as session:
+        statement = select(WatchedTicker).order_by(WatchedTicker.added_at.desc())
+        if region:
+            statement = statement.where(WatchedTicker.region == region)
+        results = await session.execute(statement)
+        return results.scalars().all()
+
+async def delete_watched_ticker(symbol: str) -> None:
+    async with trading_session() as session:
+        statement = select(WatchedTicker).where(WatchedTicker.symbol == symbol)
+        results = await session.execute(statement)
+        ticker = results.scalars().first()
+        if ticker:
+            await session.delete(ticker)
+            await session.commit()
 
 
 # ──────────────────────────────────────────────

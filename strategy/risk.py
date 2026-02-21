@@ -267,7 +267,7 @@ class RiskManager:
     # Trailing Stop & Partial Exit
     # ──────────────────────────────────────────────
 
-    def update_trailing_stop(self, symbol: str, current_price: float) -> Optional[float]:
+    def update_trailing_stop(self, symbol: str, current_price: float, atr: float = 0.0) -> Optional[float]:
         """
         Updates the trailing stop for a position.
 
@@ -284,7 +284,12 @@ class RiskManager:
             pos.high_watermark = current_price
 
         # Calculate new trailing stop level
-        new_stop = pos.high_watermark * (1.0 - self.trailing_stop_pct)
+        # ATR-based Chandelier Exit: High - (ATR * Multiplier)
+        if atr > 0:
+            multiplier = getattr(settings.active_style_profile, 'atr_multiplier', 2.0)
+            new_stop = pos.high_watermark - (atr * multiplier)
+        else:
+            new_stop = pos.high_watermark * (1.0 - self.trailing_stop_pct)
 
         # Only ratchet UP, never down
         if new_stop > pos.trailing_stop_level:

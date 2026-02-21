@@ -29,6 +29,11 @@ class TradeSignal(BaseModel):
     reason: str
     confidence: float
     recommended_option: Optional[str] = None
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None # Replacing take_profit
+    stop_loss: Optional[float] = None  # Added just in case
 
 class StrategyEngine:
     def __init__(self, 
@@ -66,12 +71,13 @@ class StrategyEngine:
             rm = self.risk_managers.get("US", list(self.risk_managers.values())[0])
         return rm
 
-    def _calculate_position_size(self, price: float, risk_manager: RiskManager, stop_loss: Optional[float] = None) -> int:
+    def _calculate_position_size(self, price: float, risk_manager: RiskManager, 
+                                 stop_loss: Optional[float] = None, 
+                                 target_price: Optional[float] = None,
+                                 atr: float = 0.0,
+                                 win_prob: float = 0.5) -> int:
         """
-        Calculates how many shares to buy based on the region's risk parameters.
-        Uses the lesser of:
-        - Max allocation per trade (from config or 20% of regional capital)
-        - Risk-based sizing using stop loss distance
+        Calculates how many shares to buy utilizing the Kelly Criterion and Volatility (ATR).
         """
         if price <= 0:
             return 0
@@ -79,15 +85,33 @@ class StrategyEngine:
         capital = float(risk_manager.current_capital)
         max_allocation = float(risk_manager.max_capital_per_trade)
         
-        max_shares_by_allocation = int(max_allocation / price)
+        # 1. Volatility Risk per share
+        risk_per_share = (price - stop_loss) if (stop_loss and stop_loss < price) else (atr * 2.5 if atr > 0 else (price * 0.05))
+        if risk_per_share <= 0: 
+            risk_per_share = price * 0.05
         
-        if stop_loss and stop_loss < price:
-            risk_per_share = price - stop_loss
-            allowed_risk = capital * float(risk_manager.max_risk_per_trade)
-            max_shares_by_risk = int(allowed_risk / risk_per_share) if risk_per_share > 0 else max_shares_by_allocation
-            return max(1, min(max_shares_by_allocation, max_shares_by_risk))
+        # 2. Reward per share
+        reward_per_share = (target_price - price) if (target_price and target_price > price) else (risk_per_share * 2.0)
         
-        return max(1, max_shares_by_allocation)
+        # 3. Kelly Criterion Allocation
+        R = reward_per_share / risk_per_share
+        W = max(0.1, min(0.95, win_prob))
+        
+        kelly_pct = W - ((1.0 - W) / R) if R > 0 else 0.0
+        # Half-Kelly for safety margin
+        half_kelly_pct = (kelly_pct / 2.0) if kelly_pct > 0 else 0.0
+        
+        # Cap allocation % to risk manager limit
+        alloc_pct = min(half_kelly_pct, max_allocation / capital if capital > 0 else 0)
+        
+        target_allocation_dollars = capital * alloc_pct
+        max_shares = int(target_allocation_dollars / price)
+        
+        # Hard cap via absolute risk limits
+        allowed_risk_dollars = capital * float(risk_manager.max_risk_per_trade)
+        shares_by_risk = int(allowed_risk_dollars / risk_per_share)
+        
+        return max(1, min(max_shares, shares_by_risk))
 
     async def analyze_symbol(self, symbol: str, macro_news: Optional[List['NewsItem']] = None) -> Optional[TradeSignal]:
         """Runs full analysis cycle for a single symbol."""
@@ -141,8 +165,12 @@ class StrategyEngine:
             current_price = price_snapshot.price
             pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0
             
-            # Update trailing stop
-            trailing_stop = risk_manager.update_trailing_stop(symbol, current_price)
+            # Fetch tech explicitly for ATR
+            tech = self.tech_analyzer.analyze(history)
+            atr_val = tech.atr if tech else 0.0
+            
+            # Update trailing stop using ATR
+            trailing_stop = risk_manager.update_trailing_stop(symbol, current_price, atr=atr_val)
             
             # Check hard stop-loss (max_risk_per_trade)
             max_risk = float(risk_manager.max_risk_per_trade)
@@ -242,7 +270,10 @@ class StrategyEngine:
             news_headlines=news_headlines_json,
             macro_factors=macro_json,
             stop_loss_suggestion=ai_signal.stop_loss_suggestion,
-            take_profit_suggestion=ai_signal.take_profit_suggestion,
+            target_sell_price=ai_signal.target_sell_price,
+            target_buy_price=ai_signal.target_buy_price,
+            option_strike=ai_signal.option_strike,
+            option_expiry=ai_signal.option_expiry,
             was_cache_hit=ai_signal.was_cache_hit,
         )
 
@@ -253,8 +284,11 @@ class StrategyEngine:
             confidence=ai_signal.confidence,
             reasoning=ai_signal.reasoning,
             recommended_option=ai_signal.recommended_option,
+            option_strike=ai_signal.option_strike,
+            option_expiry=ai_signal.option_expiry,
+            target_buy_price=ai_signal.target_buy_price,
             stop_loss=ai_signal.stop_loss_suggestion,
-            take_profit=ai_signal.take_profit_suggestion
+            target_sell_price=ai_signal.target_sell_price
         ))
 
         # 3.5 AI Risk Review (Devil's Advocate)
@@ -311,11 +345,15 @@ class StrategyEngine:
             elif "PUT" in ai_signal.decision: asset_type = "PUT"
             else: asset_type = "STOCK"
             
-            # Use AI's allocation_pct if provided, otherwise fall back to risk-based sizing
+            # Use AI's allocation_pct if provided, otherwise fall back to Kelly + Volatility sizing
+            atr_val = tech_indicators.atr if tech_indicators else 0.0
             quantity = self._calculate_position_size(
                 price=price_snapshot.price,
                 risk_manager=risk_manager,
-                stop_loss=ai_signal.stop_loss_suggestion
+                stop_loss=ai_signal.stop_loss_suggestion,
+                target_price=ai_signal.target_sell_price,
+                atr=atr_val,
+                win_prob=ai_signal.confidence
             )
             
             # Scale quantity by AI's suggested allocation
@@ -383,7 +421,12 @@ class StrategyEngine:
             price=price_snapshot.price,
             reason=ai_signal.reasoning,
             confidence=ai_signal.confidence,
-            recommended_option=ai_signal.recommended_option
+            recommended_option=ai_signal.recommended_option,
+            option_strike=ai_signal.option_strike,
+            option_expiry=ai_signal.option_expiry,
+            target_buy_price=ai_signal.target_buy_price,
+            target_sell_price=ai_signal.target_sell_price,
+            stop_loss=ai_signal.stop_loss_suggestion
         )
 
     async def run_cycle(self, watchlist: List[str]) -> List[TradeSignal]:

@@ -17,8 +17,11 @@ class Signal(SQLModel, table=True):
     confidence: float
     reasoning: str
     recommended_option: Optional[str] = None
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
     stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
 
 class Trade(SQLModel, table=True):
     __tablename__ = "trades"
@@ -36,6 +39,15 @@ class Trade(SQLModel, table=True):
     estimated_fees: Optional[float] = 0.0    # Broker + exchange fees
     net_pnl: Optional[float] = 0.0           # pnl minus fees
     fee_currency: str = "USD"                # USD or INR
+    
+    # Advanced Order & Option Support
+    is_manual: bool = False
+    order_type: str = "MARKET"               # MARKET, LIMIT, STOP
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    asset_type: str = "STOCK"                # STOCK, CALL, PUT
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
 
 class MarketTrend(SQLModel, table=True):
     __tablename__ = "market_trends"
@@ -43,6 +55,26 @@ class MarketTrend(SQLModel, table=True):
     timestamp: datetime = Field(default_factory=datetime.now)
     tickers: str  # JSON string of tickers found
     source: str = "news_scan"
+
+class AccountEquitySnapshot(SQLModel, table=True):
+    """Tracks true account equity (cash + holdings) over time."""
+    __tablename__ = "account_equity_snapshots"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.now)
+    region: str           # US or IN
+    cash: float
+    holdings_value: float
+    total_equity: float
+
+class WatchedTicker(SQLModel, table=True):
+    """Tickers discovered by the scanner that the user wants to watch."""
+    __tablename__ = "watched_tickers"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    added_at: datetime = Field(default_factory=datetime.now)
+    symbol: str
+    region: str
+    source_trend: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # ──────────────────────────────────────────────
@@ -139,8 +171,11 @@ class AIDecisionLog(SQLModel, table=True):
 
     # Stop/target suggestions
     stop_loss_suggestion: Optional[float] = None
-    take_profit_suggestion: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    target_buy_price: Optional[float] = None
     min_upside_target_pct: Optional[float] = None
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
 
     # What happened after
     was_executed: bool = False

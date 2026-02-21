@@ -166,6 +166,15 @@ async def load_dynamic_config(risk_managers=None):
                     settings.india_tickers = [t.strip() for t in config_map["INDIA_TICKERS"].split(",") if t.strip()]
                     logger.info("config_override", key="INDIA_TICKERS", count=len(settings.india_tickers))
                 except: pass
+                
+            if "TRADING_STYLE" in config_map:
+                try:
+                    style = config_map["TRADING_STYLE"].strip().lower()
+                    if style in ["intraday", "short_term", "long_term", "optimistic"]:
+                        if settings.trading_style != style:
+                            settings.trading_style = style
+                            logger.info("config_override", key="TRADING_STYLE", value=style)
+                except: pass
             
             # Risk Updates (Decimal import is now at the top of the file)
             if risk_managers and "RISK_MAX_RISK_PCT" in config_map:
@@ -332,10 +341,16 @@ async def trading_loop():
     
     # Market Scanner
     scanner = MarketScanner(news_fetcher=engine.news_fetcher, ai_analyzer=engine.ai_analyzer)
+    
+    # Macro Agent
+    from strategy.macro import MacroAgent
+    macro_agent = MacroAgent(ai_analyzer=engine.ai_analyzer, news_fetcher=engine.news_fetcher)
 
     # Main Loop
     last_scan_time = datetime.min
     last_full_analysis_time = datetime.min
+    last_holdings_analysis_time = datetime.min
+    last_macro_analysis_time = datetime.min
     is_paper = settings.trading_mode != "live"
     style_profile = settings.active_style_profile
     
@@ -400,31 +415,65 @@ async def trading_loop():
                             tickers.append(t)
                 last_scan_time = current_time
 
-            # 3. Full Analysis (Every 60s)
-            if (current_time - last_full_analysis_time).total_seconds() > 60:
-                logger.info("starting_full_analysis_cycle", style=settings.trading_style)
+            # 2.5 Macro Sentiment Check (Every 15m)
+            if (current_time - last_macro_analysis_time).total_seconds() > 900:
+                macro_state = await macro_agent.analyze_regime()
+                logger.info("macro_state_update", regime=macro_state.regime, 
+                            circuit_breaker=macro_state.circuit_breaker_active)
+                last_macro_analysis_time = current_time
+
+            # 3. Holdings Focused Analysis (Every 60s)
+            current_holdings = []
+            for rm in risk_managers.values():
+                current_holdings.extend(list(rm.positions.keys()))
                 
-                # Filter tickers by regional market hours
-                active_tickers, skipped_tickers = filter_tickers_by_market_hours(tickers, paper_mode=is_paper)
-                
-                if skipped_tickers:
-                    logger.info("tickers_skipped_market_closed", skipped=skipped_tickers)
-                
-                if not active_tickers:
-                    logger.info("no_active_markets_skipping_analysis")
-                else:
-                    signals = await engine.run_cycle(active_tickers)
-                    await execute_signals(signals, router, risk_managers)
+            if current_holdings and (current_time - last_holdings_analysis_time).total_seconds() > 60:
+                logger.info("starting_holdings_analysis", count=len(current_holdings))
+                active_h_tickers, _ = filter_tickers_by_market_hours(current_holdings, paper_mode=is_paper)
+                if active_h_tickers:
+                    h_signals = await engine.run_cycle(active_h_tickers)
                     
-                    # Log end-of-cycle status
-                    for rgn, rm in risk_managers.items():
-                        logger.info("cycle_region_status", 
-                                    region=rgn,
-                                    capital_remaining=str(rm.current_capital),
-                                    open_positions=len(rm.positions),
-                                    daily_trades=rm.daily_trade_count)
-                                    
-                last_full_analysis_time = current_time
+                    # Enforce Circuit Breaker: Halt all new buys
+                    if macro_agent.current_state.circuit_breaker_active:
+                        original_count = len(h_signals)
+                        h_signals = [s for s in h_signals if "BUY" not in s.action]
+                        if original_count != len(h_signals):
+                            logger.warning("circuit_breaker_filtered_buys", 
+                                           filtered=original_count - len(h_signals))
+                                           
+                    await execute_signals(h_signals, router, risk_managers)
+                last_holdings_analysis_time = current_time
+
+            # 4. Full Discovery & Watchlist Analysis (Every 180s)
+            if (current_time - last_full_analysis_time).total_seconds() > 180:
+                logger.info("starting_full_watchlist_analysis", style=settings.trading_style)
+                
+                if macro_agent.current_state.circuit_breaker_active:
+                    logger.warning("circuit_breaker_active_skipping_watchlist_scans", 
+                                   regime=macro_agent.current_state.regime)
+                    last_full_analysis_time = current_time
+                else:
+                    # Filter tickers by regional market hours
+                    active_tickers, skipped_tickers = filter_tickers_by_market_hours(tickers, paper_mode=is_paper)
+                    
+                    if skipped_tickers:
+                        logger.info("tickers_skipped_market_closed", skipped=skipped_tickers)
+                    
+                    if not active_tickers:
+                        logger.info("no_active_markets_skipping_analysis")
+                    else:
+                        signals = await engine.run_cycle(active_tickers)
+                        await execute_signals(signals, router, risk_managers)
+                        
+                        # Log end-of-cycle status
+                        for rgn, rm in risk_managers.items():
+                            logger.info("cycle_region_status", 
+                                        region=rgn,
+                                        capital_remaining=str(rm.current_capital),
+                                        open_positions=len(rm.positions),
+                                        daily_trades=rm.daily_trade_count)
+                                        
+                    last_full_analysis_time = current_time
             
             await asyncio.sleep(10)
 

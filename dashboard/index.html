@@ -1,13 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="QUANTUM — Autonomous Trading Agent Dashboard">
   <title>QUANTUM | Autonomous Trading Agent</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
+
 <body>
   <div class="app-shell" id="app">
 
@@ -42,6 +45,12 @@
           <a href="#discovery" data-view="discovery" role="link">
             <span class="nav-icon" aria-hidden="true">🔍</span>
             Discovery
+          </a>
+        </li>
+        <li>
+          <a href="#analysis-trade" data-view="analysis-trade" role="link">
+            <span class="nav-icon" aria-hidden="true">⚡</span>
+            Analysis & Trade
           </a>
         </li>
 
@@ -87,8 +96,8 @@
         <div class="header-actions">
           <div class="toggle-wrap">
             <label class="toggle-label" for="killSwitch">Agent</label>
-            <input type="checkbox" class="toggle" id="killSwitch" checked
-                   onchange="toggleKillSwitch(this.checked)" aria-label="Toggle trading agent">
+            <input type="checkbox" class="toggle" id="killSwitch" checked onchange="toggleKillSwitch(this.checked)"
+              aria-label="Toggle trading agent">
           </div>
           <button class="btn btn-ghost btn-icon" onclick="refreshAll()" aria-label="Refresh data">🔄</button>
         </div>
@@ -107,4 +116,5 @@
 
   <script src="/assets/app.js"></script>
 </body>
+
 </html>
