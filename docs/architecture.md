@@ -69,8 +69,10 @@ The analysis pipeline for each ticker:
 | `correlations.py` | Cross-impact analysis (peers, macro sensitivities) | Hardcoded + Dynamic sector-based discovery |
 | `technical.py` | Computes RSI, MACD, Bollinger Bands, SMA-50/200 | Uses `pandas_ta` library |
 | `news.py` | Fetches news via GoogleNews | 10-minute cache TTL |
-| `risk.py` | Position sizing, capital limit enforcement | Region-aware capital allocation |
+| `risk.py` | Position sizing, capital limit enforcement | Kelly Criterion and ATR-based Volatility Sizing |
 | `scanner.py` | AI-powered market trend detection | Identifies sector rotations and macro trends |
+| `macro.py` | Global Market Sentiment Analyzer | Triggers Circuit Breaker (Halt Buys) if VIX > 25 or bearish regime |
+| `fx.py` | Live Exchange Rate Normalizer | Fetches USD/INR rates from yfinance to normalize net worth |
 | `market_hours.py` | Market open/close, holiday/early close detection | Uses `exchange_calendars` for NYSE/BSE |
 | `earnings.py` | Upcoming quarterly results calendar | 6-hour cache, 7-day warning window |
 
@@ -109,36 +111,49 @@ The system uses a **dual-database** architecture stored in `__databases__/`:
 ### 5. Dashboard — `dashboard_api.py` + SPA
 
 FastAPI-based backend serving a responsive Single Page Application (SPA):
-- **Backend**: `dashboard_api.py` (FastAPI) provides REST endpoints for data.
+- **Backend**: `dashboard_api.py` (FastAPI) provides REST endpoints for data, including **Manual Trade Execution** directly inserted into the database.
 - **Frontend**: `dashboard/` (Vanilla JS, CSS3, HTML5) handles UI rendering.
 - **Features**:
-  - Real-time polling via `fetch()` API
-  - Canvas-based charting for performance
+  - Unified Global Portfolio (USD converted via `fx.py`)
+  - Deep-dive Manual Analysis & Execution
+  - Advanced Quant Metrics (Sharpe, Profit Factor, Drawdown)
   - Automatic Dark/Light mode switching
-  - Detailed AI Decision inspector
 
 
 ---
 
 ## Data Flow
 
-### Signal Generation Flow
+### Signal Generation Flow (Automated)
 ```
 1. main.py selects ticker from regional watchlist
-2. engine.py checks market hours (live mode only)
-3. Concurrent fetch: price + history + options + news
-4. correlations.py fetches cross-impact data (peers, macro)
-5. technical.py computes indicators from 1Y history
-6. earnings.py checks for upcoming quarterly results
-7. ai.py constructs LLM prompt with all data
+2. macro.py runs global sentiment check (circuit breaker)
+3. engine.py runs current holdings check (trailing stops via ATR)
+4. engine.py checks market hours (live mode only)
+5. Concurrent fetch: price + history + options + news
+6. correlations.py fetches cross-impact data (peers, macro)
+7. technical.py computes indicators (including ATR for volatility)
+8. ai.py constructs LLM prompt with all data
    └── Cache check → hit? return cached signal
    └── Cache miss → call LLM → cache result
-8. ai.py risk review (Devil's Advocate)
-   └── Same cache mechanism
-9. risk.py validates position size and capital
-10. router.py routes to appropriate broker
-11. Trade executed (or simulated in paper mode)
-12. All steps logged to DB + API call stats
+9. ai.py risk review (Devil's Advocate)
+10. risk.py validates position size using Kelly Criterion
+11. router.py routes to appropriate broker
+12. Trade executed (or simulated in paper mode)
+13. All steps logged to DB + API call stats
+```
+
+### Manual Pre-Trade Analysis Flow
+The user can request an on-demand analysis via the Dashboard SPA without triggering an automated trade:
+```
+1. User enters Symbol + Options specifics in the "Analysis & Trade" UI
+2. Dashboard SPA POSTs to dashboard_api.py (/api/analyze)
+3. dashboard_api.py instantiates MarketDataFetcher, NewsFetcher, TechAnalyzer, AIAnalyzer
+4. Concurrent fetch of identical data used in the automated loop (prices, options, news)
+5. AIAnalyzer computes a decision (decision, confidence, reasoning, target values, allocations)
+6. Results returned synchronously to the Dashboard UI
+7. User reviews the verdict & manually submits a trade if desired
+8. dashboard_api.py inserts the manual trade directly into the Trading DB
 ```
 
 ### LLM Cache Strategy

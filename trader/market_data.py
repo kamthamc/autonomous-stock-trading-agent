@@ -25,6 +25,8 @@ class OptionData(BaseModel):
     expiry: str
     option_type: str  # "call" or "put"
     last_price: float
+    bid: float = 0.0
+    ask: float = 0.0
     volume: int
     open_interest: int
     implied_volatility: float
@@ -136,6 +138,8 @@ class MarketDataFetcher:
                     expiry=next_expiry,
                     option_type="call",
                     last_price=row['lastPrice'],
+                    bid=row.get('bid', 0.0),
+                    ask=row.get('ask', 0.0),
                     volume=int(row['volume']) if not pd.isna(row['volume']) else 0,
                     open_interest=int(row['openInterest']) if not pd.isna(row['openInterest']) else 0,
                     implied_volatility=row['impliedVolatility']
@@ -149,6 +153,8 @@ class MarketDataFetcher:
                     expiry=next_expiry,
                     option_type="put",
                     last_price=row['lastPrice'],
+                    bid=row.get('bid', 0.0),
+                    ask=row.get('ask', 0.0),
                     volume=int(row['volume']) if not pd.isna(row['volume']) else 0,
                     open_interest=int(row['openInterest']) if not pd.isna(row['openInterest']) else 0,
                     implied_volatility=row['impliedVolatility']

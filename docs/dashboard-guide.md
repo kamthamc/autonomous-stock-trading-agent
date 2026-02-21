@@ -37,7 +37,13 @@ Detailed inspection of the agent's thought process:
 *   **Sector Scan**: Real-time performance of key sectors (Tech, Finance, Energy) in both US and India.
 *   **Market Status**: Quick view of global market trends.
 
-### 4. ⚡ AI Metrics
+### 4. ⚡ Analysis & Trade
+Manual execution and AI vetting portal:
+*   **Get AI Analysis**: Input any symbol (and optional option derivatives like Strike/Expiry). The AI will fetch live data, compute technicals, read news, and provide a BUY/HOLD/SELL verdict with target prices and confidence before you trade.
+*   **Manual Trade Execution**: Log manual trades outside the automated loop into the local database to keep portfolio performance and equity charts perfectly aligned. Supports Market, Limit, and Stop Loss orders.
+*   **Visual Execution Chart**: Instantly plot your exact historical entries and exits directly on a candlestick price chart.
+
+### 5. ⚡ AI Metrics
 Operational health monitoring:
 *   **API Usage**: Track token consumption, latency, and costs for OpenAI/Gemini.
 *   **Cache Performance**: Hit rates for the semantic cache (saving money/time).

@@ -24,6 +24,14 @@ from agent_config import settings
 TRADING_DB = settings.trading_db_path
 DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "dashboard")
 
+# Add strategy dir to path so we can import fx module
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy"))
+try:
+    from strategy.fx import get_usd_inr_rate
+except ImportError:
+    # Fallback if strategy module not fully available yet
+    def get_usd_inr_rate(): return 83.5
+
 # Valid trade statuses (exclude failed/error/rejected)
 VALID_TRADE_STATUSES = ("placed", "FILLED", "filled", "COMPLETED", "completed")
 
@@ -155,12 +163,21 @@ def system_status():
 @app.get("/api/portfolio")
 def portfolio():
     """Portfolio with valid trades only, portfolio value timeline, and position data."""
+    # FX Rate
+    usd_inr_rate = get_usd_inr_rate()
+    
     # Only count valid (non-failed) trades
     trades = _query(
         TRADING_DB,
         """SELECT * FROM trades
            WHERE status IN ('placed','FILLED','filled','COMPLETED','completed')
            ORDER BY timestamp ASC""",
+    )
+    
+    # Try fetching True Account Equity tracking from db
+    equity_snapshots = _query(
+        TRADING_DB,
+        "SELECT * FROM account_equity_snapshots ORDER BY timestamp ASC"
     )
     holdings: dict = {}
     running_pnl_us = 0.0
@@ -172,6 +189,17 @@ def portfolio():
     value_timeline = []
     running_invested_us = 0.0
     running_invested_in = 0.0
+    
+    # Advanced Metrics
+    winning_trades = 0
+    losing_trades = 0
+    gross_profit_us = 0.0
+    gross_loss_us = 0.0
+    gross_profit_in = 0.0
+    gross_loss_in = 0.0
+    
+    peak_global_pnl = 0.0
+    max_pnl_drawdown_usd = 0.0
 
     for t in trades:
         sym = t["symbol"]
@@ -204,10 +232,30 @@ def portfolio():
             if region == "US":
                 running_pnl_us += pnl
                 running_invested_us -= qty * h["avg"]
+                if pnl > 0:
+                    winning_trades += 1
+                    gross_profit_us += pnl
+                elif pnl < 0:
+                    losing_trades += 1
+                    gross_loss_us += abs(pnl)
             else:
                 running_pnl_in += pnl
                 running_invested_in -= qty * h["avg"]
+                if pnl > 0:
+                    winning_trades += 1
+                    gross_profit_in += pnl
+                elif pnl < 0:
+                    losing_trades += 1
+                    gross_loss_in += abs(pnl)
             h["qty"] -= qty
+            
+            # Drawdown (calculated on realized PNL Curve)
+            current_global_pnl = running_pnl_us + (running_pnl_in / usd_inr_rate)
+            if current_global_pnl > peak_global_pnl:
+                peak_global_pnl = current_global_pnl
+            drawdown = peak_global_pnl - current_global_pnl
+            if drawdown > max_pnl_drawdown_usd:
+                max_pnl_drawdown_usd = drawdown
 
         value_timeline.append({
             "time": t["timestamp"],
@@ -228,14 +276,29 @@ def portfolio():
                 "realized": round(h["realized"], 2),
             })
 
+    total_closed = winning_trades + losing_trades
+    global_gross_profit = gross_profit_us + (gross_profit_in / usd_inr_rate)
+    global_gross_loss = gross_loss_us + (gross_loss_in / usd_inr_rate)
+    
+    advanced_metrics = {
+        "win_rate": round((winning_trades / total_closed * 100) if total_closed > 0 else 0.0, 1),
+        "profit_factor": round((global_gross_profit / global_gross_loss) if global_gross_loss > 0 else (99.9 if global_gross_profit > 0 else 0.0), 2),
+        "winning_trades": winning_trades,
+        "losing_trades": losing_trades,
+        "max_drawdown_usd": round(max_pnl_drawdown_usd, 2)
+    }
+
     return {
         "active_positions": active,
         "value_timeline": value_timeline,
+        "true_equity_timeline": equity_snapshots,  # If empty, frontend uses value_timeline as fallback
+        "live_usd_inr": usd_inr_rate,
         "us_realized_pnl": round(running_pnl_us, 2),
         "in_realized_pnl": round(running_pnl_in, 2),
         "us_fees": round(total_fees_us, 2),
         "in_fees": round(total_fees_in, 2),
         "total_trades": len(trades),
+        "advanced_metrics": advanced_metrics,
     }
 
 
@@ -261,6 +324,83 @@ def trades(limit: int = Query(100, ge=1, le=1000)):
             seen_ids.add(oid)
         deduped.append(r)
     return deduped
+
+
+class ManualTradeRequest(BaseModel):
+    symbol: str
+    action: str
+    quantity: float
+    price: float
+    order_type: str = "MARKET"
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    asset_type: str = "STOCK"
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
+    region: str = "US"
+
+
+@app.post("/api/manual-trade")
+def execute_manual_trade(trade: ManualTradeRequest):
+    """
+    Endpoint for dashboard to record a manual trade directly.
+    In a fully integrated setup, this would also call the Broker API.
+    For now, we record it in the DB to ensure dashboard tracking is accurate.
+    """
+    # Create required tables if missing (for legacy or robust starts)
+    _execute(TRADING_DB, "CREATE TABLE IF NOT EXISTS trades (...)") # Rely on Alembic/migrations in production
+    
+    timestamp = datetime.now().isoformat()
+    order_id = f"manual_{int(datetime.now().timestamp())}"
+    
+    sql = """
+        INSERT INTO trades (
+            timestamp, symbol, action, quantity, price, status, order_id, 
+            region, strategy, pnl, estimated_fees, net_pnl, fee_currency,
+            is_manual, order_type, limit_price, stop_price, asset_type, 
+            option_strike, option_expiry
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    params = (
+        timestamp, trade.symbol.upper(), trade.action.upper(), trade.quantity, trade.price, 
+        "FILLED" if trade.order_type == "MARKET" else "PENDING", 
+        order_id, trade.region, "MANUAL_DASHBOARD", 0.0, 0.0, 0.0, 
+        "USD" if trade.region == "US" else "INR",
+        True, trade.order_type, trade.limit_price, trade.stop_price, trade.asset_type,
+        trade.option_strike, trade.option_expiry
+    )
+    
+    success = _execute(TRADING_DB, sql, params)
+    if success:
+        return {"ok": True, "order_id": order_id, "message": f"Manual {trade.action} logged."}
+    return JSONResponse(status_code=500, content={"error": "Database insert failed."})
+
+
+class WatchTickerRequest(BaseModel):
+    symbol: str
+    region: str
+    notes: Optional[str] = None
+
+
+@app.post("/api/watched-tickers")
+def add_watched_ticker(req: WatchTickerRequest):
+    timestamp = datetime.now().isoformat()
+    sql = "INSERT INTO watched_tickers (added_at, symbol, region, notes) VALUES (?, ?, ?, ?)"
+    success = _execute(TRADING_DB, sql, (timestamp, req.symbol.upper(), req.region, req.notes))
+    if success:
+        return {"ok": True, "symbol": req.symbol}
+    return JSONResponse(status_code=500, content={"error": "Database insert failed."})
+
+
+@app.get("/api/watched-tickers")
+def get_watched_tickers():
+    return _query(TRADING_DB, "SELECT * FROM watched_tickers ORDER BY added_at DESC")
+
+
+@app.delete("/api/watched-tickers/{symbol}")
+def delete_watched_ticker(symbol: str):
+    success = _execute(TRADING_DB, "DELETE FROM watched_tickers WHERE symbol = ?", (symbol.upper(),))
+    return {"ok": success}
 
 
 @app.get("/api/ai-decisions")
@@ -339,6 +479,11 @@ def ai_decisions(
             "decision": s["decision"],
             "confidence": s["confidence"],
             "reasoning": s["reasoning"],
+            "target_buy_price": s.get("target_buy_price"),
+            "target_sell_price": s.get("target_sell_price"),
+            "stop_loss_suggestion": s.get("stop_loss"),
+            "option_strike": s.get("option_strike"),
+            "option_expiry": s.get("option_expiry"),
             "review_decision": matching_review.get("review_decision") if matching_review else None,
             "review_reasoning": matching_review.get("review_reasoning") if matching_review else None,
             "was_overridden": matching_review.get("was_overridden", False) if matching_review else False,
@@ -488,6 +633,130 @@ def factory_reset():
     _execute(adb, "DELETE FROM ai_decision_logs")
     _execute(adb, "DELETE FROM news_fingerprints")
     return {"ok": True, "cleared": "all"}
+
+
+@app.get("/api/chart/{symbol}")
+def chart_data(symbol: str, days: int = Query(90)):
+    """Fetch recent price history for a symbol and any recorded trades to plot execution."""
+    import yfinance as yf
+    try:
+        # Fetch OHLC data
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=f"{days}d")
+        
+        prices = []
+        if not df.empty:
+            for index, row in df.iterrows():
+                prices.append({
+                    "date": index.strftime("%Y-%m-%d"),
+                    "close": round(row['Close'], 2)
+                })
+                
+        # Fetch execution trades for this symbol
+        trades = _query(
+            TRADING_DB,
+            "SELECT timestamp, action, price, quantity FROM trades WHERE symbol = ? AND status IN ('placed','FILLED','filled','COMPLETED','completed') ORDER BY timestamp ASC",
+            (symbol.upper(),)
+        )
+        
+        return {
+            "symbol": symbol.upper(),
+            "prices": prices,
+            "trades": trades
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class AnalyzeRequest(BaseModel):
+    symbol: str
+    asset_type: str = "STOCK"
+    option_strike: Optional[float] = None
+    option_expiry: Optional[str] = None
+
+@app.post("/api/analyze")
+async def analyze_symbol_api(req: AnalyzeRequest):
+    import asyncio
+    from trader.market_data import MarketDataFetcher
+    from strategy.news import NewsFetcher
+    from strategy.technical import TechAnalyzer
+    from strategy.ai import AIAnalyzer
+    from strategy.earnings import get_earnings_info
+    from strategy.correlations import get_cross_impact
+    
+    market_data = MarketDataFetcher()
+    news_fetcher = NewsFetcher()
+    tech_analyzer = TechAnalyzer()
+    ai_analyzer = AIAnalyzer()
+    
+    symbol = req.symbol.upper()
+    
+    try:
+        price_snapshot, history, options, specific_news = await asyncio.gather(
+            market_data.get_current_price(symbol),
+            market_data.get_history(symbol, period="1y"),
+            market_data.get_option_chain(symbol),
+            news_fetcher.get_news(f"{symbol} stock market news", dedup_symbol=symbol)
+        )
+        
+        if not price_snapshot or history.empty:
+            return JSONResponse(status_code=400, content={"error": "Insufficient market data for symbol."})
+            
+        tech = tech_analyzer.analyze(history)
+        earnings = get_earnings_info(symbol)
+        cross_impact = get_cross_impact(symbol)
+        
+        # If user explicitly provided an option, we inject it as a prioritized option visually for the AI
+        if req.asset_type in ["CALL", "PUT"] and req.option_strike and req.option_expiry:
+            tgt_opt = {
+                "contractSymbol": f"USER_TARGET_{req.asset_type}",
+                "strike": req.option_strike,
+                "type": req.asset_type,
+                "expiration": req.option_expiry,
+                "lastPrice": 0.0,
+                "impliedVolatility": 0.0
+            }
+            options.insert(0, tgt_opt)
+            
+        signal = await ai_analyzer.analyze(
+            symbol=symbol,
+            price=price_snapshot.price,
+            tech=tech.__dict__ if tech else {},
+            news=specific_news,
+            options=options,
+            earnings=earnings.__dict__ if earnings else None,
+            cross_impact=cross_impact
+        )
+        # Extract bid/ask for the recommended option if possible
+        rec_bid, rec_ask = 0.0, 0.0
+        if signal.recommended_option and signal.recommended_option != "null" and isinstance(options, list):
+            for opt in options:
+                # Options can be dicts (if injected) or OptionData objects
+                if isinstance(opt, dict):
+                    continue # Injected options don't have real bid/ask
+                if opt.strike == signal.option_strike and opt.expiry == signal.option_expiry:
+                    rec_bid = opt.bid
+                    rec_ask = opt.ask
+                    break
+
+        return {
+            "ok": True,
+            "current_price": price_snapshot.price,
+            "decision": signal.decision,
+            "confidence": signal.confidence,
+            "reasoning": signal.reasoning,
+            "recommended_option": signal.recommended_option,
+            "option_strike": signal.option_strike,
+            "option_expiry": signal.option_expiry,
+            "option_bid": rec_bid,
+            "option_ask": rec_ask,
+            "target_buy_price": signal.target_buy_price,
+            "target_sell_price": signal.target_sell_price,
+            "stop_loss": signal.stop_loss_suggestion,
+            "allocation_pct": getattr(signal, "allocation_pct", None)
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ── Static Files + SPA Fallback ──

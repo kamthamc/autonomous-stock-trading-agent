@@ -130,6 +130,7 @@ const routes = {
   portfolio: renderPortfolio,
   "ai-decisions": renderDecisions,
   discovery: renderDiscovery,
+  "analysis-trade": renderAnalysisTrade,
   metrics: renderMetrics,
   settings: renderSettings,
 };
@@ -149,9 +150,9 @@ function handleRoute() {
     a.classList.toggle("active", a.getAttribute("href") === hashStr);
     console.log(a.getAttribute("href"), hashStr);
   });
-  const title = $(".page-title");
+  const title = $(".page-title") || $("#pageTitle");
   if (title) {
-    const titles = { portfolio: "Portfolio", "ai-decisions": "AI Decisions", discovery: "Discovery", metrics: "AI Metrics", settings: "Settings" };
+    const titles = { portfolio: "Portfolio", "ai-decisions": "AI Decisions", discovery: "Discovery", "analysis-trade": "Analysis & Trade", metrics: "AI Metrics", settings: "Settings" };
     title.textContent = titles[hash] || "Portfolio";
   }
   view();
@@ -222,10 +223,15 @@ async function renderPortfolio() {
 
   // ── Metric Cards ──
   const grid = el("div", { class: "metric-grid" });
+
+  const fxRate = portfolio.live_usd_inr || 83.5;
+  const globalUsdVal = usActiveVal + (inActiveVal / fxRate);
+
   const cards = [
     { label: "🇺🇸 Active Holdings", value: fmtCurrency(usActiveVal, "US"), sub: `${positions.filter(p => p._region === "US").length} positions` },
     { label: "🇮🇳 Active Holdings", value: fmtCurrency(inActiveVal, "IN"), sub: `${positions.filter(p => p._region === "IN").length} positions` },
-    { label: "🇺🇸 Realized P&L", value: `${pnlPrefix(portfolio.us_realized_pnl)}${fmtCurrency(portfolio.us_realized_pnl, "US")}`, sub: `Fees: ${fmtCurrency(portfolio.us_fees, "US")}`, color: pnlColor(portfolio.us_realized_pnl) },
+    { label: "� Global Net Worth", value: fmtCurrency(globalUsdVal, "US"), sub: `INR @ ${fxRate.toFixed(2)}`, color: "var(--primary)" },
+    { label: "�🇺🇸 Realized P&L", value: `${pnlPrefix(portfolio.us_realized_pnl)}${fmtCurrency(portfolio.us_realized_pnl, "US")}`, sub: `Fees: ${fmtCurrency(portfolio.us_fees, "US")}`, color: pnlColor(portfolio.us_realized_pnl) },
     { label: "🇮🇳 Realized P&L", value: `${pnlPrefix(portfolio.in_realized_pnl)}${fmtCurrency(portfolio.in_realized_pnl, "IN")}`, sub: `Fees: ${fmtCurrency(portfolio.in_fees, "IN")}`, color: pnlColor(portfolio.in_realized_pnl) },
   ];
   cards.forEach(c => {
@@ -237,6 +243,26 @@ async function renderPortfolio() {
     grid.appendChild(card);
   });
   main.appendChild(grid);
+
+  // ── Performance Metrics ──
+  const advMetrics = portfolio.advanced_metrics;
+  if (advMetrics) {
+    const perfGrid = el("div", { class: "metric-grid", style: { marginTop: "16px" } });
+    const perfCards = [
+      { label: "🏆 Win Rate", value: `${advMetrics.win_rate}%`, sub: `${advMetrics.winning_trades}W / ${advMetrics.losing_trades}L` },
+      { label: "⚖️ Profit Factor", value: advMetrics.profit_factor.toFixed(2), sub: advMetrics.profit_factor >= 2 ? "Excellent" : (advMetrics.profit_factor > 1 ? "Profitable" : "Unprofitable"), color: advMetrics.profit_factor > 1 ? "var(--primary)" : "var(--danger)" },
+      { label: "📉 Max Drawdown", value: fmtCurrency(advMetrics.max_drawdown_usd, "US"), sub: "Peak to trough USD", color: "var(--danger)" },
+    ];
+    perfCards.forEach(c => {
+      const card = el("div", { class: "card metric-card" }, [
+        el("div", { class: "metric-label", text: c.label }),
+        el("div", { class: "metric-value", text: c.value, style: c.color ? { color: c.color } : {} }),
+        el("div", { class: "metric-sub text-muted", text: c.sub }),
+      ]);
+      perfGrid.appendChild(card);
+    });
+    main.appendChild(perfGrid);
+  }
 
   // ── Portfolio Value Chart + Active Positions ──
   const midRow = el("div", { class: "grid-2" });
@@ -276,9 +302,25 @@ async function renderPortfolio() {
   chartCard.appendChild(chartCanvas);
 
   // Legend
-  const legend = el("div", { style: { display: "flex", gap: "16px", marginTop: "8px" } });
-  legend.appendChild(el("span", { html: '<span style="color:var(--accent)">●</span> US Value', class: "text-muted", style: { fontSize: "12px" } }));
-  legend.appendChild(el("span", { html: '<span style="color:var(--warning)">●</span> IN Value', class: "text-muted", style: { fontSize: "12px" } }));
+  const legend = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" } });
+
+  const legendLeft = el("div", { style: { display: "flex", gap: "16px" } });
+  legendLeft.appendChild(el("span", { html: '<span style="color:var(--primary)">●</span> Global Net Worth', class: "text-muted", style: { fontSize: "12px", fontWeight: "bold" } }));
+  legendLeft.appendChild(el("span", { html: '<span style="color:var(--accent)">●</span> US Value', class: "text-muted", style: { fontSize: "12px" } }));
+  legendLeft.appendChild(el("span", { html: '<span style="color:var(--warning)">●</span> IN Value', class: "text-muted", style: { fontSize: "12px" } }));
+
+  let chartCurrency = "USD";
+  const currencyToggle = el("div", { style: { fontSize: "12px", display: "flex", gap: "4px", alignItems: "center" } });
+  currencyToggle.appendChild(document.createTextNode("View in: "));
+  const btnUsd = el("button", { class: "btn btn--ghost active", text: "USD", style: { padding: "2px 6px", fontSize: "11px" } });
+  const btnInr = el("button", { class: "btn btn--ghost", text: "INR", style: { padding: "2px 6px", fontSize: "11px" } });
+
+  btnUsd.onclick = () => { btnUsd.classList.add("active"); btnInr.classList.remove("active"); chartCurrency = "USD"; drawPortfolioChart(chartCanvas, portfolio.value_timeline, activeRange === "ALL" ? 0 : ranges.find(r => r.label === activeRange).days, fxRate, "USD"); };
+  btnInr.onclick = () => { btnInr.classList.add("active"); btnUsd.classList.remove("active"); chartCurrency = "INR"; drawPortfolioChart(chartCanvas, portfolio.value_timeline, activeRange === "ALL" ? 0 : ranges.find(r => r.label === activeRange).days, fxRate, "INR"); };
+
+  currencyToggle.append(btnUsd, btnInr);
+  legend.append(legendLeft, currencyToggle);
+
   chartCard.appendChild(legend);
 
   midRow.appendChild(chartCard);
@@ -320,7 +362,7 @@ async function renderPortfolio() {
   main.appendChild(midRow);
 
   // Draw chart (ALL by default)
-  drawPortfolioChart(chartCanvas, portfolio.value_timeline, 0);
+  drawPortfolioChart(chartCanvas, portfolio.value_timeline, 0, fxRate, chartCurrency);
 
   // ── Recent Trades ──
   const tradeCard = el("div", { class: "card" });
@@ -359,7 +401,7 @@ async function renderPortfolio() {
   main.appendChild(tradeCard);
 }
 
-function drawPortfolioChart(canvas, timeline, daysFilter) {
+function drawPortfolioChart(canvas, timeline, daysFilter, fxRate = 83.5, currency = "USD") {
   if (!timeline || timeline.length === 0) {
     const ctx = canvas.getContext("2d");
     const w = canvas.parentElement.clientWidth - 40;
@@ -393,19 +435,22 @@ function drawPortfolioChart(canvas, timeline, daysFilter) {
   canvas.style.width = w + "px"; canvas.style.height = h + "px";
   ctx.scale(2, 2);
 
-  const pad = { top: 20, right: 20, bottom: 40, left: 60 };
+  const pad = { top: 20, right: 60, bottom: 40, left: 60 };
   const cw = w - pad.left - pad.right;
   const ch = h - pad.top - pad.bottom;
 
   const style = getComputedStyle(document.documentElement);
-  const textColor = style.getPropertyValue("--text-tertiary").trim();
-  const gridColor = style.getPropertyValue("--border").trim();
-  const accentColor = style.getPropertyValue("--accent").trim();
+  const textColor = style.getPropertyValue("--text-tertiary").trim() || "#94a3b8";
+  const gridColor = style.getPropertyValue("--border").trim() || "#e2e8f0";
+  const accentColor = style.getPropertyValue("--accent").trim() || "#3b82f6";
   const warningColor = style.getPropertyValue("--warning").trim() || "#f59e0b";
+  const primaryColor = style.getPropertyValue("--primary").trim() || "#10b981";
 
-  const usValues = data.map(d => d.us_value);
-  const inValues = data.map(d => d.in_value);
-  const allValues = [...usValues, ...inValues];
+  const usValues = data.map(d => currency === "USD" ? d.us_value : (d.us_value * fxRate));
+  const inValues = data.map(d => currency === "USD" ? (d.in_value / fxRate) : d.in_value);
+  const globalValues = usValues.map((v, i) => v + inValues[i]);
+
+  const allValues = [...usValues, ...inValues, ...globalValues];
   const maxVal = Math.max(...allValues, 1);
 
   // Grid lines
@@ -416,7 +461,15 @@ function drawPortfolioChart(canvas, timeline, daysFilter) {
     const y = pad.top + (ch / 4) * i;
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
     ctx.fillStyle = textColor; ctx.font = "10px Inter, sans-serif"; ctx.textAlign = "right";
-    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i).toLocaleString(), pad.left - 8, y + 4);
+
+    // Add symbol to grid labels
+    const symb = currency === "USD" ? "$" : "₹";
+    const label = Math.round(maxVal - (maxVal / 4) * i).toLocaleString();
+    ctx.fillText(`${symb}${label}`, pad.left - 8, y + 4);
+
+    // Also paint on the right side for symmetry
+    ctx.textAlign = "left";
+    ctx.fillText(`${symb}${label}`, w - pad.right + 8, y + 4);
   }
   ctx.setLineDash([]);
 
@@ -429,10 +482,10 @@ function drawPortfolioChart(canvas, timeline, daysFilter) {
   }
 
   // Draw lines
-  function drawLine(values, color) {
+  function drawLine(values, color, fill = false) {
     if (values.length < 2) return;
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = fill ? 3 : 2;
     ctx.beginPath();
     values.forEach((v, i) => {
       const x = pad.left + (i / (values.length - 1 || 1)) * cw;
@@ -441,17 +494,20 @@ function drawPortfolioChart(canvas, timeline, daysFilter) {
     });
     ctx.stroke();
 
-    // Area fill
-    ctx.globalAlpha = 0.08;
-    ctx.lineTo(pad.left + cw, pad.top + ch);
-    ctx.lineTo(pad.left, pad.top + ch);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    if (fill) {
+      // Area fill
+      ctx.globalAlpha = 0.08;
+      ctx.lineTo(pad.left + cw, pad.top + ch);
+      ctx.lineTo(pad.left, pad.top + ch);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
   }
 
-  drawLine(usValues, accentColor);
-  drawLine(inValues, warningColor);
+  drawLine(usValues, accentColor, false);
+  drawLine(inValues, warningColor, false);
+  drawLine(globalValues, primaryColor, true);
 }
 
 
@@ -565,6 +621,25 @@ function renderDecisionList(container, decisions) {
       details.appendChild(reviewBox);
     }
 
+    // Execution Targets
+    if (d.target_buy_price || d.target_sell_price || d.stop_loss_suggestion || d.option_strike) {
+      hasDetails = true;
+      const paramBox = el("div", { style: { marginBottom: "12px" } });
+      paramBox.innerHTML = `<div class="text-muted" style="margin-bottom:4px; font-weight:600;">🎯 Execution Targets</div>`;
+
+      const paramGrid = el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "8px" } });
+
+      if (d.target_buy_price) paramGrid.appendChild(el("div", { class: "badge badge--info", text: `Buy Target: $${d.target_buy_price}` }));
+      if (d.target_sell_price) paramGrid.appendChild(el("div", { class: "badge badge--success", text: `Sell Target: $${d.target_sell_price}` }));
+      if (d.stop_loss_suggestion) paramGrid.appendChild(el("div", { class: "badge badge--danger", text: `Stop Loss: $${d.stop_loss_suggestion}` }));
+
+      if (d.option_strike) paramGrid.appendChild(el("div", { class: "badge badge--warning", text: `Strike: $${d.option_strike}` }));
+      if (d.option_expiry) paramGrid.appendChild(el("div", { class: "badge badge--warning", text: `Expiry: ${d.option_expiry}` }));
+
+      paramBox.appendChild(paramGrid);
+      details.appendChild(paramBox);
+    }
+
     // 2. Technicals (from ai_decision_logs)
     if (d.technical_summary) {
       hasDetails = true;
@@ -572,10 +647,27 @@ function renderDecisionList(container, decisions) {
       const techBox = el("div", { style: { marginBottom: "12px" } });
       techBox.innerHTML = `<div class="text-muted" style="margin-bottom:4px; font-weight:600;">📈 Technicals</div>`;
 
-      const techGrid = el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "8px" } });
+      const techGrid = el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "8px" } });
       for (const [k, v] of Object.entries(tech)) {
         if (typeof v === 'object') continue; // Skip nested if any
-        techGrid.appendChild(el("div", { class: "badge badge--neutral", text: `${k}: ${v}` }));
+        let displayVal = v;
+        let semanticLabel = k.toUpperCase().replace(/_/g, " ");
+
+        if (typeof v === 'number') {
+          if (k === 'volume' || k === 'avg_volume') {
+            displayVal = v.toLocaleString(); // Add commas for big numbers
+          } else if (k === 'rsi') {
+            displayVal = `${v.toFixed(1)} ${v >= 70 ? '🟥 (Overbought)' : v <= 30 ? '🟩 (Oversold)' : '⬜ (Neutral)'}`;
+          } else if (k.includes('macd')) {
+            displayVal = `${v > 0 ? '+' : ''}${v.toFixed(3)}`;
+          } else if (k === 'volume_oscillator') {
+            displayVal = `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
+          } else if (!Number.isInteger(v)) {
+            displayVal = `$${v.toFixed(2)}`; // Price values (SMA, Bollinger, ATR)
+          }
+        }
+
+        techGrid.appendChild(el("div", { class: "badge badge--neutral", text: `${semanticLabel}: ${displayVal}` }));
       }
       techBox.appendChild(techGrid);
       details.appendChild(techBox);
@@ -725,7 +817,44 @@ async function renderMetrics() {
 // ═══════════════════════════════════════════════════════════
 async function renderDiscovery() {
   const main = $("main");
+  main.innerHTML = '<div class="loading-spinner">Loading discovery…</div>';
+
+  const watched = await api.get("watched-tickers") || [];
+
   main.innerHTML = "";
+
+  // ── WATCHED TICKERS ──
+  const watchCard = el("div", { class: "card", style: { marginBottom: "20px" } });
+  watchCard.appendChild(el("div", { class: "card-title", text: "👀 WATCHED TICKERS" }));
+
+  if (watched.length === 0) {
+    watchCard.appendChild(el("p", { class: "text-muted empty-state", text: "No watched tickers yet. Browse below to add some." }));
+  } else {
+    const wGrid = el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px" } });
+    watched.forEach(w => {
+      const chip = el("div", { class: "badge badge--neutral", style: { display: "flex", gap: "6px", alignItems: "center", padding: "4px 10px", fontSize: "12px", borderRadius: "12px" } });
+      chip.appendChild(regionBadge(w.symbol));
+      chip.appendChild(el("strong", { text: w.symbol }));
+
+      const delBtn = el("button", {
+        html: "&times;",
+        style: { background: "none", border: "none", color: "var(--danger)", cursor: "pointer", fontSize: "16px", marginLeft: "4px", padding: "0 4px", lineHeight: "1" },
+        on: {
+          click: async () => {
+            if (await confirm(`Remove ${w.symbol} from watchlist?`)) {
+              await api.delete(`watched-tickers/${w.symbol}`);
+              toast(`Removed ${w.symbol}`);
+              renderDiscovery();
+            }
+          }
+        }
+      });
+      chip.appendChild(delBtn);
+      wGrid.appendChild(chip);
+    });
+    watchCard.appendChild(wGrid);
+  }
+  main.appendChild(watchCard);
 
   const sectors = [
     // US
@@ -772,20 +901,14 @@ async function renderDiscovery() {
         on: {
           click: async (e) => {
             e.stopPropagation();
-            const region = ticker.endsWith(".NS") || ticker.endsWith(".BO") ? "india" : "us";
-            const configKey = region === "india" ? "INDIA_TICKERS" : "US_TICKERS";
-            const config = await api.get("config");
-            if (!config) return toast("Failed to load config", "error");
-            const current = (config.config[configKey] || "").split(",").map(s => s.trim()).filter(Boolean);
-            if (current.includes(ticker)) {
-              toast(`${ticker} already in watchlist`, "info");
-              return;
+            const region = ticker.endsWith(".NS") || ticker.endsWith(".BO") ? "IN" : "US";
+            const res = await api.post("watched-tickers", { symbol: ticker, region: region, notes: "Added from Discovery" });
+            if (res && res.ok) {
+              toast(`Added ${ticker} to watch list`, "success");
+              renderDiscovery();
+            } else {
+              toast(`Failed or already in watchlist`, "error");
             }
-            current.push(ticker);
-            await api.post("config", { key: configKey, value: current.join(",") });
-            toast(`Added ${ticker} to ${region.toUpperCase()} watchlist`, "success");
-            chip.style.opacity = "0.5";
-            chip.disabled = true;
           }
         },
       });
@@ -800,6 +923,279 @@ async function renderDiscovery() {
 }
 
 
+// ═══════════════════════════════════════════════════════════
+//  VIEW: ANALYSIS & TRADE
+// ═══════════════════════════════════════════════════════════
+async function renderAnalysisTrade() {
+  const main = $("main");
+  main.innerHTML = "";
+
+  const container = el("div", { style: { maxWidth: "800px", margin: "0 auto" } });
+
+  // ── HEADER ──
+  container.appendChild(el("div", { class: "card-title", text: "⚡ ANALYSIS & TRADE", style: { marginBottom: "8px" } }));
+  container.appendChild(el("p", { class: "text-muted", text: "Analyze assets with the AI before executing. Manually executed trades are recorded in the portfolio database.", style: { marginBottom: "24px", fontSize: "14px" } }));
+
+  // ── ANALYSIS SECTION ──
+  const analysisCard = el("div", { class: "card", style: { marginBottom: "20px" } });
+
+  const searchRow = el("div", { style: { display: "flex", gap: "12px", marginBottom: "16px" } });
+  searchRow.appendChild(el("div", { style: { flex: 2 } }, [
+    el("label", { text: "Symbol", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "analyze-symbol", class: "settings-input", type: "text", required: true, style: { width: "100%" }, placeholder: "e.g. AAPL or RELIANCE.NS" })
+  ]));
+  searchRow.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Asset", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("select", {
+      id: "analyze-asset", class: "settings-input", style: { width: "100%" }, on: {
+        change: (e) => {
+          const isOpt = e.target.value !== "STOCK";
+          $("#opt-details-row").style.display = isOpt ? "flex" : "none";
+        }
+      }
+    }, [
+      el("option", { value: "STOCK", text: "Stock" }),
+      el("option", { value: "CALL", text: "Call Option" }),
+      el("option", { value: "PUT", text: "Put Option" }),
+    ])
+  ]));
+  analysisCard.appendChild(searchRow);
+
+  const optRow = el("div", { id: "opt-details-row", style: { display: "none", gap: "12px", marginBottom: "16px", padding: "12px", background: "var(--bg-elevated)", borderRadius: "8px" } });
+  optRow.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Strike Price", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "analyze-strike", class: "settings-input", type: "number", step: "0.01", style: { width: "100%" } })
+  ]));
+  optRow.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Expiry Date", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "analyze-expiry", class: "settings-input", type: "date", style: { width: "100%" } })
+  ]));
+  analysisCard.appendChild(optRow);
+
+  const analyzeBtn = el("button", {
+    class: "btn btn--primary",
+    html: "🧠 Get AI Analysis & Load Chart",
+    style: { width: "100%", padding: "12px" }
+  });
+  analysisCard.appendChild(analyzeBtn);
+
+  // ── RESULTS & CHART BOX ──
+  const resultsBox = el("div", { id: "analysis-result-box", style: { display: "none", marginTop: "20px" } });
+  const aiReportDiv = el("div", { style: { padding: "16px", background: "var(--bg-card)", border: "1px dashed var(--border)", borderRadius: "8px", marginBottom: "20px" } });
+  const chartContainer = el("div", { style: { width: "100%", height: "300px", position: "relative", marginBottom: "20px" } });
+  const chartCanvas = el("canvas", { width: "800", height: "300" });
+  chartContainer.appendChild(chartCanvas);
+
+  resultsBox.appendChild(aiReportDiv);
+  resultsBox.appendChild(chartContainer);
+
+  const proceedBtn = el("button", { class: "btn btn--outline", text: "Proceed to Trade Execution ↓", style: { width: "100%" } });
+  resultsBox.appendChild(proceedBtn);
+
+  analysisCard.appendChild(resultsBox);
+  container.appendChild(analysisCard);
+
+  // ── TRADE EXECUTION SECTION (Hidden initally) ──
+  const executeCard = el("div", { id: "execute-card", class: "card", style: { display: "none" } });
+  executeCard.appendChild(el("div", { class: "card-title", text: "📝 ORDER DETAILS", style: { marginBottom: "16px", color: "var(--text-secondary)" } }));
+
+  const form = el("form", {
+    on: {
+      submit: async (e) => {
+        e.preventDefault();
+        const payload = {
+          symbol: $("#analyze-symbol").value.trim().toUpperCase(),
+          action: $("#trade-action").value,
+          quantity: parseFloat($("#trade-qty").value),
+          price: parseFloat($("#trade-price").value),
+          order_type: $("#trade-order").value,
+          limit_price: parseFloat($("#trade-limit").value) || null,
+          stop_price: parseFloat($("#trade-stop").value) || null,
+          asset_type: $("#analyze-asset").value,
+          option_strike: parseFloat($("#analyze-strike").value) || null,
+          option_expiry: $("#analyze-expiry").value || null,
+          region: $("#trade-region").value,
+        };
+
+        if (!payload.symbol || !payload.quantity || !payload.price) {
+          return toast("Symbol, quantity, and execution price are required.", "error");
+        }
+
+        const confirmMsg = `Execute ${payload.action} for ${payload.quantity} ${payload.symbol} @ $${payload.price} (${payload.order_type})?`;
+        if (!(await confirm(confirmMsg))) return;
+
+        const res = await api.post("manual-trade", payload);
+        if (res && res.ok) {
+          toast(`Trade submitted successfully! ID: ${res.order_id}`, "success");
+          form.reset();
+          $("#execute-card").style.display = "none";
+          $("#analysis-result-box").style.display = "none";
+        } else {
+          toast("Failed to submit trade.", "error");
+        }
+      }
+    }
+  });
+
+  const row1 = el("div", { style: { display: "flex", gap: "12px", marginBottom: "12px" } });
+  row1.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Action", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("select", { id: "trade-action", class: "settings-input", style: { width: "100%" } }, [
+      el("option", { value: "BUY", text: "BUY" }),
+      el("option", { value: "SELL", text: "SELL" }),
+    ])
+  ]));
+  row1.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Quantity", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "trade-qty", class: "settings-input", type: "number", step: "0.000001", required: true, style: { width: "100%" } })
+  ]));
+  row1.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Est. Execution Price", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "trade-price", class: "settings-input", type: "number", step: "0.01", required: true, style: { width: "100%" } })
+  ]));
+  form.appendChild(row1);
+
+  const row2 = el("div", { style: { display: "flex", gap: "12px", marginBottom: "16px" } });
+  row2.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Region", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("select", { id: "trade-region", class: "settings-input", style: { width: "100%" } }, [
+      el("option", { value: "US", text: "US (USD)" }),
+      el("option", { value: "IN", text: "IN (INR)" }),
+    ])
+  ]));
+  row2.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Order Type", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("select", { id: "trade-order", class: "settings-input", style: { width: "100%" } }, [
+      el("option", { value: "MARKET", text: "Market" }),
+      el("option", { value: "LIMIT", text: "Limit" }),
+      el("option", { value: "STOP", text: "Stop Loss" }),
+    ])
+  ]));
+  row2.appendChild(el("div", { style: { flex: 1 } }, [
+    el("label", { text: "Limit / Stop Price", style: { display: "block", marginBottom: "4px", fontSize: "12px", fontWeight: "bold" } }),
+    el("input", { id: "trade-limit", class: "settings-input", type: "number", step: "0.01", style: { width: "100%" }, placeholder: "Optional target" })
+  ]));
+  form.appendChild(row2);
+
+  form.appendChild(el("button", { class: "btn btn--primary", type: "submit", text: "Submit Order", style: { width: "100%", padding: "12px" } }));
+  executeCard.appendChild(form);
+  container.appendChild(executeCard);
+
+  main.appendChild(container);
+
+  // ── EVENT LISTENERS ──
+  proceedBtn.onclick = () => {
+    executeCard.style.display = "block";
+    proceedBtn.style.display = "none";
+    $("#trade-qty").focus();
+  };
+
+  analyzeBtn.onclick = async () => {
+    const symbol = $("#analyze-symbol").value.trim().toUpperCase();
+    if (!symbol) return toast("Symbol is required.", "error");
+
+    const payload = {
+      symbol: symbol,
+      asset_type: $("#analyze-asset").value,
+      option_strike: parseFloat($("#analyze-strike").value) || null,
+      option_expiry: $("#analyze-expiry").value || null,
+    };
+
+    analyzeBtn.innerHTML = '<span class="loading-spinner" style="display:inline-block;width:14px;height:14px;margin:0 8px 0 0;border-width:2px"></span> Analyzing...';
+    analyzeBtn.disabled = true;
+    resultsBox.style.display = "none";
+    executeCard.style.display = "none";
+    proceedBtn.style.display = "block";
+
+    try {
+      // 1. Fetch AI Analysis
+      const res = await api.post("analyze", payload);
+      if (res && res.ok) {
+        $("#trade-price").value = res.current_price || "";
+        $("#trade-region").value = symbol.endsWith(".NS") || symbol.endsWith(".BO") ? "IN" : "US";
+
+        // Auto-fill action based on decision
+        if (res.decision.includes("BUY")) $("#trade-action").value = "BUY";
+        else if (res.decision.includes("SELL")) $("#trade-action").value = "SELL";
+
+        let decColor = res.decision.includes("BUY") ? "var(--success)" : res.decision.includes("SELL") ? "var(--danger)" : "var(--text-primary)";
+
+        let optionHtml = '';
+        if (res.recommended_option && res.recommended_option !== 'null') {
+          const bidText = res.option_bid ? `$${res.option_bid.toFixed(2)}` : 'N/A';
+          const askText = res.option_ask ? `$${res.option_ask.toFixed(2)}` : 'N/A';
+          const assetType = res.recommended_option.includes('CALL') ? 'CALL' : 'PUT';
+
+          optionHtml = `
+            <div style="font-size: 13px; padding: 12px; margin-top: 12px; border: 1px solid var(--accent); border-radius: 6px; background: rgba(16, 185, 129, 0.05); cursor: pointer;"
+                 onclick="
+                   document.getElementById('analyze-asset').value = '${assetType}';
+                   document.getElementById('opt-details-row').style.display = 'flex';
+                   document.getElementById('analyze-strike').value = '${res.option_strike || ''}';
+                   document.getElementById('analyze-expiry').value = '${res.option_expiry || ''}';
+                   document.getElementById('trade-action').value = 'BUY';
+                   document.getElementById('trade-price').value = '${res.option_ask || res.target_buy_price || ''}';
+                   window.toast('Option inputs auto-filled! Please check Execution Form.', 'success');
+                   document.getElementById('execute-card').scrollIntoView({ behavior: 'smooth' });
+                 ">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong>💡 Option Insight (Click to structure trade)</strong>
+                <span style="font-size: 11px; padding: 2px 6px; background: var(--bg-hover); border-radius: 4px;">Bid: ${bidText} | Ask: ${askText}</span>
+              </div>
+              <div>${res.recommended_option}</div>
+            </div>`;
+        }
+
+        aiReportDiv.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <strong style="font-size: 16px;">AI Verdict: <span style="color: ${decColor}">${res.decision}</span></strong>
+              <span class="badge badge--neutral">${(res.confidence * 100).toFixed(0)}% Confidence</span>
+            </div>
+            <p style="font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;">
+              ${res.reasoning || "No reasoning provided."}
+            </p>
+            <div style="font-size: 13px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+              <div><strong>Current Price:</strong> $${res.current_price}</div>
+              <div><strong>Suggested Alloc:</strong> ${res.allocation_pct ? (res.allocation_pct * 100).toFixed(1) + '%' : 'N/A'}</div>
+              <div><strong>Buy Target:</strong> ${res.target_buy_price ? '$' + res.target_buy_price : 'N/A'}</div>
+              <div><strong>Sell Target:</strong> ${res.target_sell_price ? '$' + res.target_sell_price : 'N/A'}</div>
+            </div>
+            ${optionHtml}
+          `;
+      } else {
+        aiReportDiv.innerHTML = `<p class="text-danger">Analysis Failed: ${res?.error || "Unknown error"}</p>`;
+      }
+
+      // 2. Fetch Chart Data in parallel visually
+      const chartRes = await api.get(`chart/${symbol}?days=90`);
+
+      const ctx = chartCanvas.getContext("2d");
+      const w = chartContainer.clientWidth || 760;
+      chartCanvas.width = w * 2; chartCanvas.height = 300 * 2;
+      chartCanvas.style.width = w + "px"; chartCanvas.style.height = "300px";
+
+      if (chartRes && !chartRes.error) {
+        drawExecutionChart(chartCanvas, chartRes.prices, chartRes.trades);
+      } else {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(2, 2);
+        ctx.clearRect(0, 0, w, 300);
+        ctx.fillStyle = "var(--text-tertiary)";
+        ctx.font = "14px Inter, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Chart data unavailable.", w / 2, 150);
+      }
+
+      resultsBox.style.display = "block";
+
+    } catch (e) {
+      toast("Request Error", "error");
+    } finally {
+      analyzeBtn.innerHTML = "🧠 Get AI Analysis & Load Chart";
+      analyzeBtn.disabled = false;
+    }
+  };
+}
 // ═══════════════════════════════════════════════════════════
 //  VIEW: SETTINGS
 // ═══════════════════════════════════════════════════════════
@@ -851,7 +1247,17 @@ async function renderSettings() {
   const riskInput = el("input", { class: "settings-input", type: "number", value: config.RISK_MAX_RISK_PCT || "5", style: { width: "100%", marginBottom: "12px" } });
   riskCard.appendChild(riskInput);
 
-  riskCard.appendChild(el("div", { class: "text-muted", style: { fontSize: "12px", lineHeight: "1.6" }, html: `Mode: <strong>${defaults.trading_mode.toUpperCase()}</strong> · Style: <strong>${defaults.trading_style.toUpperCase()}</strong><br>US Capital: <strong>${fmtCurrency(defaults.us_max_capital, "US")}</strong> · IN Capital: <strong>${fmtCurrency(defaults.india_max_capital, "IN")}</strong>` }));
+  riskCard.appendChild(el("label", { text: "Trading Style", style: { fontSize: "13px", fontWeight: 600, display: "block", marginBottom: "4px" } }));
+  const styleSelect = el("select", { class: "settings-input", style: { width: "100%", marginBottom: "12px" } }, [
+    el("option", { value: "intraday", text: "Intraday (Aggressive)" }),
+    el("option", { value: "short_term", text: "Short Term (Swing)" }),
+    el("option", { value: "long_term", text: "Long Term (Trend)" }),
+    el("option", { value: "optimistic", text: "Optimistic" })
+  ]);
+  styleSelect.value = config.TRADING_STYLE || defaults.trading_style;
+  riskCard.appendChild(styleSelect);
+
+  riskCard.appendChild(el("div", { class: "text-muted", style: { fontSize: "12px", lineHeight: "1.6" }, html: `Mode: <strong>${defaults.trading_mode.toUpperCase()}</strong><br>US Capital: <strong>${fmtCurrency(defaults.us_max_capital, "US")}</strong> · IN Capital: <strong>${fmtCurrency(defaults.india_max_capital, "IN")}</strong>` }));
   topRow.appendChild(riskCard);
   main.appendChild(topRow);
 
@@ -866,6 +1272,7 @@ async function renderSettings() {
           { key: "INDIA_TICKERS", value: inTA.value.trim() },
           { key: "RISK_MAX_ALLOC_PCT", value: allocInput.value },
           { key: "RISK_MAX_RISK_PCT", value: riskInput.value },
+          { key: "TRADING_STYLE", value: styleSelect.value },
         ];
         for (const u of updates) await api.post("config", u);
         toast("Configuration saved!", "success");
@@ -989,6 +1396,110 @@ function drawLineChart(canvas, data) {
   ctx.stroke();
 }
 
+function drawExecutionChart(canvas, prices, trades) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.parentElement.clientWidth;
+  const h = 300;
+  canvas.width = w * 2; canvas.height = h * 2;
+  canvas.style.width = w + "px"; canvas.style.height = h + "px";
+  // Reset transform from earlier
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(2, 2);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!prices || prices.length < 2) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--text-tertiary");
+    ctx.font = "14px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Not enough price data.", w / 2, h / 2);
+    return;
+  }
+
+  const pad = { top: 30, right: 60, bottom: 40, left: 20 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  const style = getComputedStyle(document.documentElement);
+  const textColor = style.getPropertyValue("--text-tertiary").trim() || "#94a3b8";
+  const gridColor = style.getPropertyValue("--border").trim() || "#e2e8f0";
+  const accentColor = style.getPropertyValue("--primary").trim() || "#10b981"; // use primary for chart
+  const buyColor = style.getPropertyValue("--success") || "#10b981";
+  const sellColor = style.getPropertyValue("--danger") || "#ef4444";
+
+  const allVals = prices.map(p => p.close);
+  const minVal = Math.min(...allVals) * 0.98;
+  const maxVal = Math.max(...allVals) * 1.02;
+  const range = maxVal - minVal;
+
+  // Grid lines
+  ctx.strokeStyle = gridColor; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (ch / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    ctx.fillStyle = textColor; ctx.font = "10px Inter, sans-serif"; ctx.textAlign = "left";
+    const label = (maxVal - (range / 4) * i).toFixed(2);
+    ctx.fillText(label, w - pad.right + 8, y + 4);
+  }
+  ctx.setLineDash([]);
+
+  // X-axis (Dates)
+  const step = Math.max(1, Math.floor(prices.length / 6));
+  ctx.fillStyle = textColor; ctx.font = "10px Inter, sans-serif"; ctx.textAlign = "center";
+  for (let i = 0; i < prices.length; i += step) {
+    const x = pad.left + (i / (prices.length - 1 || 1)) * cw;
+    ctx.fillText(prices[i].date, x, h - 8);
+  }
+
+  // Draw Price Line
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  prices.forEach((p, i) => {
+    const x = pad.left + (i / (prices.length - 1 || 1)) * cw;
+    const y = pad.top + ch - ((p.close - minVal) / range) * ch;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Draw Trades
+  if (trades && trades.length > 0) {
+    trades.forEach(t => {
+      // Best effort alignment: Find closest date index
+      const tDate = t.timestamp.split("T")[0].split(" ")[0];
+      let closestIdx = -1;
+      let minDiff = Infinity;
+      const tTime = new Date(tDate).getTime();
+
+      prices.forEach((p, i) => {
+        const pTime = new Date(p.date).getTime();
+        const diff = Math.abs(pTime - tTime);
+        if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+      });
+
+      if (closestIdx !== -1) {
+        const x = pad.left + (closestIdx / (prices.length - 1 || 1)) * cw;
+        const ptPrice = t.price || prices[closestIdx].close;
+        const clampedPrice = Math.max(minVal, Math.min(maxVal, ptPrice));
+        const y = pad.top + ch - ((clampedPrice - minVal) / range) * ch;
+
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, 2 * Math.PI);
+        ctx.fillStyle = t.action.toUpperCase().includes("BUY") ? buyColor : sellColor;
+        ctx.fill();
+        ctx.strokeStyle = "var(--bg-card)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    });
+
+    // Legend for trades
+    ctx.fillStyle = textColor;
+    ctx.textAlign = "left";
+    ctx.fillText("● BUY", pad.left, pad.top - 10);
+    ctx.fillStyle = sellColor;
+    ctx.fillText("● SELL", pad.left + 45, pad.top - 10);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  INIT

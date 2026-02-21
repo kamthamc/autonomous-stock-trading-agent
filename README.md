@@ -46,6 +46,10 @@ An advanced, AI-powered autonomous trading agent capable of analyzing market dat
   - `activity_YYYY_MM.db` — High-volume operational data with monthly rotation (risk reviews, API call logs, agent events)
 - **API Call Tracking** — Every LLM/broker/data call is logged with latency, token usage, and success status
 - **Real-Time Dashboard** — High-performance SPA with auto-refresh, showing signals, trades, PnL, risk reviews, API stats, earnings calendar, and market status
+- **Manual Analysis & Trade UI** — Detailed UI for requesting on-demand AI Analysis for stocks and options with real-time Option Bids/Asks and Visual Execution Charts without triggering the automated loop
+
+### Validation & Testing
+- **Historical Backtesting Engine** — Standalone `backtest.py` script securely tests AI strategy using real retroactive data, comparing simulation ROI against simple Buy & Hold ROI.
 
 ---
 
@@ -137,9 +141,11 @@ INDIA_WATCHLIST=RELIANCE,TCS,INFY,HDFCBANK
 # Start the trading agent
 python main.py
 
-# In another terminal — launch the dashboard
 # In another terminal — launch the dashboard backend (access at http://localhost:8050)
 python dashboard_api.py
+
+# To run a simulation via the backtesting engine
+python backtest.py --symbol AAPL --days 30 --capital 10000
 ```
 
 ---

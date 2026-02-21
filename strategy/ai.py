@@ -81,8 +81,11 @@ class AISignal(BaseModel):
     confidence: float = Field(..., description="0.0 to 1.0")
     reasoning: str
     recommended_option: Optional[str] = Field(None, description="Recommended option contract")
+    option_strike: Optional[float] = Field(None, description="Strike price for the recommended option")
+    option_expiry: Optional[str] = Field(None, description="Expiry date (YYYY-MM-DD) for the recommended option")
+    target_buy_price: Optional[float] = Field(None, description="Target price to buy the asset or contract")
     stop_loss_suggestion: Optional[float] = None
-    take_profit_suggestion: Optional[float] = None
+    target_sell_price: Optional[float] = Field(None, description="Target price to sell the asset or contract")
     allocation_pct: Optional[float] = Field(None, description="Fraction of available capital to use (0.05 to 1.0)")
     was_cache_hit: bool = False  # Set by the caller, not by the LLM
 
@@ -115,23 +118,35 @@ class AIAnalyzer:
         """Formats the top 5 liquid calls and puts into a string table."""
         if not options:
             return "No options data available."
+            
+        from datetime import datetime
+        today = datetime.now().date()
+        
+        valid_options = []
+        for o in options:
+            try:
+                exp_date = datetime.strptime(o.expiry, '%Y-%m-%d').date()
+                if (exp_date - today).days >= 3:
+                    valid_options.append(o)
+            except Exception:
+                valid_options.append(o)
 
-        calls = [o for o in options if o.option_type == 'call']
-        puts = [o for o in options if o.option_type == 'put']
+        calls = [o for o in valid_options if o.option_type == 'call']
+        puts = [o for o in valid_options if o.option_type == 'put']
         top_calls = sorted(calls, key=lambda x: x.volume, reverse=True)[:5]
         top_puts = sorted(puts, key=lambda x: x.volume, reverse=True)[:5]
 
-        table = "Top Liquid Options (Calls):\n"
-        table += f"| {'Strike':<8} | {'Expiry':<10} | {'Last':<6} | {'Vol':<6} | {'OI':<6} | {'IV':<5} |\n"
-        table += "-" * 60 + "\n"
+        table = "Top Liquid Options (Calls — Min 3 Days to Expiry):\n"
+        table += f"| {'Strike':<8} | {'Expiry':<10} | {'Bid':<6} | {'Ask':<6} | {'Last':<6} | {'Vol':<6} | {'OI':<6} | {'IV':<5} |\n"
+        table += "-" * 75 + "\n"
         for o in top_calls:
-            table += f"| {o.strike:<8} | {o.expiry:<10} | {o.last_price:<6} | {o.volume:<6} | {o.open_interest:<6} | {o.implied_volatility:.2f} |\n"
+            table += f"| {o.strike:<8} | {o.expiry:<10} | {o.bid:<6.2f} | {o.ask:<6.2f} | {o.last_price:<6.2f} | {o.volume:<6} | {o.open_interest:<6} | {o.implied_volatility:.2f} |\n"
         
-        table += "\nTop Liquid Options (Puts):\n"
-        table += f"| {'Strike':<8} | {'Expiry':<10} | {'Last':<6} | {'Vol':<6} | {'OI':<6} | {'IV':<5} |\n"
-        table += "-" * 60 + "\n"
+        table += "\nTop Liquid Options (Puts — Min 3 Days to Expiry):\n"
+        table += f"| {'Strike':<8} | {'Expiry':<10} | {'Bid':<6} | {'Ask':<6} | {'Last':<6} | {'Vol':<6} | {'OI':<6} | {'IV':<5} |\n"
+        table += "-" * 75 + "\n"
         for o in top_puts:
-            table += f"| {o.strike:<8} | {o.expiry:<10} | {o.last_price:<6} | {o.volume:<6} | {o.open_interest:<6} | {o.implied_volatility:.2f} |\n"
+            table += f"| {o.strike:<8} | {o.expiry:<10} | {o.bid:<6.2f} | {o.ask:<6.2f} | {o.last_price:<6.2f} | {o.volume:<6} | {o.open_interest:<6} | {o.implied_volatility:.2f} |\n"
             
         return table
 
@@ -259,7 +274,8 @@ class AIAnalyzer:
 
         IMPORTANT RULES:
         - Be DECISIVE. Good setup → confidence > 0.7. Weak/ambiguous → confidence < 0.5. Avoid mushy middle.
-        - If recommending BUY_CALL or BUY_PUT, SELECT a specific contract from the Options Chain.
+        - If recommending BUY_CALL or BUY_PUT, SELECT a specific contract from the Options Chain. Provide its strike price, expiry date, and the specific target price to buy the contract.
+        - DO NOT recommend options expiring today or tomorrow (0DTE/1DTE). Always target expiries at least 3-5 days out.
         - Set allocation_pct to indicate how much of available capital to invest (0.05 to 0.40).
         - For SELL signals, set allocation_pct to indicate what fraction of the position to sell (0.25=partial, 1.0=full exit).
         - Don't signal SELL just because of a small pullback — trailing stops handle that.
@@ -271,8 +287,11 @@ class AIAnalyzer:
             "confidence": float (0.0-1.0),
             "reasoning": "string explanation including which macro/news factors influenced your decision",
             "recommended_option": "string or null",
+            "option_strike": float or null,
+            "option_expiry": "str (YYYY-MM-DD) or null",
+            "target_buy_price": float or null,
+            "target_sell_price": float or null,
             "stop_loss_suggestion": float,
-            "take_profit_suggestion": float,
             "allocation_pct": float (0.05 to 1.0 — how much capital to use for BUY, or position fraction to sell for SELL)
         }}
         """
@@ -367,6 +386,39 @@ class AIAnalyzer:
                 ))
             except Exception:
                 pass
+
+    async def _get_completion_json(self, system_prompt: str, user_prompt: str) -> dict:
+        """Generic JSON completion endpoint for auxiliary AI tasks like Macro Analysis."""
+        content = None
+        try:
+            if self.provider == "gemini":
+                full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nEnsure response is pure JSON."
+                response = await self.gemini_client.aio.models.generate_content(
+                    model=self.gemini_model,
+                    contents=full_prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                content = response.text
+            else:
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                
+            if content and "```json" in content:
+                content = content.replace("```json", "").replace("```", "")
+            if content and "```" in content:
+                content = content.replace("```", "")
+                
+            return json.loads(content.strip())
+        except Exception as e:
+            logger.error("generic_llm_json_failed", error=str(e), content=content)
+            return {}
 
     async def review_trade(self, symbol: str, signal: AISignal, price: float, tech: dict, news: list) -> RiskReviewResult:
         """
